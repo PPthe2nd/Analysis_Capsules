@@ -17,6 +17,7 @@ p.addParameter('cLow', [0.50 0.50 0.50], @(x) isnumeric(x) && numel(x)==3);
 p.addParameter('cHigh', [0.85 0.05 0.05], @(x) isnumeric(x) && numel(x)==3);
 p.addParameter('hotScale', false, @(x) islogical(x) && isscalar(x));
 p.addParameter('colorHotMaxFactor', 8.0, @(x) isnumeric(x) && isscalar(x) && x > 1);
+p.addParameter('hardAlphaCutoff', false, @(x) islogical(x) && isscalar(x));
 p.addParameter('enforceK', true, @(x) islogical(x) && isscalar(x));
 p.addParameter('timeWindow', [], @(x) isempty(x) || (isnumeric(x) && numel(x)==2));
 p.addParameter('timeLabelRef', 'center', @(x) ischar(x) || isstring(x));
@@ -69,7 +70,11 @@ else
     C = (1-tr).*opt.cLow + tr.*opt.cHigh;
 end
 
-alphaScale = min(max(V ./ opt.alphaFullAt, 0), 1);
+if opt.hardAlphaCutoff
+    alphaScale = double(V >= opt.alphaFullAt);
+else
+    alphaScale = min(max(V ./ opt.alphaFullAt, 0), 1);
+end
 alphaPoint = min(1, max(0, opt.alpha * alphaScale));
 
 W = 1024; H = 768;
@@ -143,6 +148,7 @@ h.cMax = cMax;
 h.threshold = opt.alphaFullAt;
 h.fracAboveThreshold = mean(V > opt.alphaFullAt);
 h.showStimulus = opt.showStimulus;
+h.hardAlphaCutoff = opt.hardAlphaCutoff;
 
 end
 
