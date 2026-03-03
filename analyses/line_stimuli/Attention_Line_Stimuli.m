@@ -6,15 +6,27 @@ RUN_HISTOGRAM = false;
 RUN_QC = false;
 RUN_POST_AFFINE_VALUES = false;
 RUN_PREP_ANCHOR_KNN = false;
-RUN_PREP_NOISE_SIGNAL = true;
+RUN_PREP_NOISE_SIGNAL = false;
 RUN_STILLS = false;
-RUN_MOVIE = true;
+RUN_MOVIE = false;
+RUN_GROUP_POLYGON_PREP = false;
+RUN_GROUP_POLYGON_STILLS = false;
+RUN_GROUP_POLYGON_MOVIE = false;
+RUN_GROUP_POLYGON_TIMESERIES = false;
+RUN_GROUP_POLYGON_EXGAUSS_FIT = true;
 
 %% Central parameters
 P = struct();
 P.timeIdx3 = 3;                      % 3-bin dataset: 300-500 ms
-P.targetWin10 = [300 310];           % short window target (nearest bin)
-P.targetWinPre = [-100 -90];         % pre-stim control window (nearest bin)
+% P.respCapsulesFile = 'Resp_capsules_N_d12.mat'; % high-resolution response windows
+% P.resultTag = 'd12';                 % suffix for output files to avoid overwriting runs
+% P.targetWin = [300 310];             % target window request [ms] (nearest bin selected)
+%P.targetWinPre = [-100 -90];         % pre-stim control window (nearest bin)
+P.respCapsulesFile = 'Resp_capsules_N_d20.mat';
+P.resultTag = 'd20';
+P.targetWin = [300 320];
+P.targetWinPre = [-100 -80];
+P.targetWin10 = P.targetWin;         % backwards-compatible alias
 P.pThresh = 0.05;                    % hard significance rule
 P.siteRange = 1:512;
 P.stimIDExample = 38;
@@ -52,9 +64,29 @@ P.postStartMs = 300;                 % post bins: start >= this time
 P.preQuantilePct = 99.98;               % threshold from pre-stim |value| quantile
 P.alphaFloorPct = 80;                % suggested alpha floor from pre-stim
 P.cMaxPostPct = 95;                  % suggested cMax from post-stim
+P.groupN = 8;                        % number of along_GC quantile groups
+P.groupPolygonShrink = 0.8;          % boundary() shrink factor for group polygons
+P.groupPreQuantilePct = P.preQuantilePct; % grouped threshold from pre-stim quantile
+P.groupCMaxPostPct = P.cMaxPostPct;  % grouped color max from post-stim quantile
+P.groupTraceMode = 'overlay';        % 'overlay' (all curves in one axes) or 'subplots'
+P.groupExGaussFitStartMs = -200;     % fit start (ms)
+P.groupExGaussFitEndMs = 500;        % fit end (ms)
+P.groupExGaussSmoothW = 1;           % moving-average width before fit (bins)
+P.groupExGaussMinSigma = 5;          % lower bound for sigma
+P.groupExGaussMaxSigma = 400;        % upper bound for sigma
+P.groupSigMinRunBins = 3;            % onset criterion: >= this many consecutive significant bins
+P.groupSigSearchStartMs = 0;         % onset search starts at this time (ms)
 P.stillRunConsistencyCheck = false;  % expensive global KNN check; disable for speed
 P.timeLabelRef = 'start';            % 'start' keeps stimulus onset aligned at 0 ms
 P.stimOnsetMs = 0;                   % stimulus becomes visible from this bin start (ms)
+
+% Build a safe file suffix for run-specific outputs (e.g., _d12, _d20).
+runTag = char(string(P.resultTag));
+if isempty(strtrim(runTag))
+    [~, runTag] = fileparts(P.respCapsulesFile);
+end
+runTag = regexprep(runTag, '[^A-Za-z0-9_-]', '_');
+tagSuffix = ['_' runTag];
 
 
 %% Required context
@@ -130,19 +162,23 @@ if RUN_HISTOGRAM
 end
 
 %% Load high-resolution response windows
-if RUN_QC || RUN_POST_AFFINE_VALUES || RUN_STILLS || RUN_MOVIE
+if RUN_QC || RUN_POST_AFFINE_VALUES || RUN_STILLS || RUN_MOVIE || RUN_GROUP_POLYGON_PREP || RUN_GROUP_POLYGON_STILLS || RUN_GROUP_POLYGON_MOVIE
     if ~exist('R_resp', 'var') || ~isstruct(R_resp)
-        S = load(fullfile(cfg.matDir, 'Resp_capsules_N_d12.mat'));  % loads R
+        S = load(fullfile(cfg.matDir, P.respCapsulesFile));  % loads R
         R_resp = S.R;
     end
 
     assert(isfield(R_resp, 'timeWindows') && size(R_resp.timeWindows,2) == 2, ...
-        'Resp_capsules_N_d12.mat must contain R.timeWindows as [nWindows x 2].');
+        '%s must contain R.timeWindows as [nWindows x 2].', P.respCapsulesFile);
     assert(size(R_resp.timeWindows,1) > 3, ...
-        ['Resp_capsules_N_d12.mat appears to have only %d windows. ' ...
-         'Expected many short windows for 10 ms plotting/movie.'], size(R_resp.timeWindows,1));
+        ['%s appears to have only %d windows. ' ...
+         'Expected many short windows for still/movie plotting.'], P.respCapsulesFile, size(R_resp.timeWindows,1));
 
-    [~, timeIdxTarget] = min(sum(abs(R_resp.timeWindows - P.targetWin10),2));
+    targetWinReq = P.targetWin10;
+    if isfield(P, 'targetWin') && isnumeric(P.targetWin) && numel(P.targetWin) == 2
+        targetWinReq = P.targetWin;
+    end
+    [~, timeIdxTarget] = min(sum(abs(R_resp.timeWindows - targetWinReq),2));
     winTarget = R_resp.timeWindows(timeIdxTarget,:);
     assert((winTarget(2)-winTarget(1)) <= 25, ...
         'Selected target bin is [%d %d] ms (duration %.1f ms).', winTarget(1), winTarget(2), winTarget(2)-winTarget(1));
@@ -205,7 +241,9 @@ if RUN_QC
 end
 
 %% Optional export of post-affine signed T-D values for all bins
-outValuesFile = fullfile(cfg.resultsDir, sprintf('post_affine_delta_points_allbins_stim%d.mat', P.stimIDExample));
+outValuesFile = fullfile(cfg.resultsDir, sprintf('post_affine_delta_points_allbins_stim%d%s.mat', P.stimIDExample, tagSuffix));
+groupedFile = fullfile(cfg.resultsDir, sprintf('grouped_alonggc_polygons_stim%d_N%d%s.mat', ...
+    P.stimIDExample, P.groupN, tagSuffix));
 if RUN_POST_AFFINE_VALUES
     siteRangeVals = P.siteRange(:)';
     sigMaskVals = isfinite(OUT3.pValueTD(siteRangeVals)) & (OUT3.pValueTD(siteRangeVals) < P.pThresh);
@@ -236,7 +274,7 @@ if RUN_PREP_ANCHOR_KNN
         end
     end
 
-    prepFile = fullfile(cfg.resultsDir, sprintf('anchor_knn_prep_stim%d.mat', P.stimIDExample));
+    prepFile = fullfile(cfg.resultsDir, sprintf('anchor_knn_prep_stim%d%s.mat', P.stimIDExample, tagSuffix));
     PREP = analyze_anchor_knn_timeseries( ...
         OUT_postAffine, Tall_V1, OUT3, P.stimIDExample, ...
         'siteRange', P.siteRange, ...
@@ -264,7 +302,7 @@ if RUN_PREP_NOISE_SIGNAL
         end
     end
 
-    prepNoiseFile = fullfile(cfg.resultsDir, sprintf('knn_noise_signal_prep_stim%d.mat', P.stimIDExample));
+    prepNoiseFile = fullfile(cfg.resultsDir, sprintf('knn_noise_signal_prep_stim%d%s.mat', P.stimIDExample, tagSuffix));
     PREP_NOISE = analyze_knn_noise_signal_thresholds( ...
         OUT_postAffine, Tall_V1, ...
         'KList', P.prepKList, ...
@@ -279,6 +317,40 @@ if RUN_PREP_NOISE_SIGNAL
         'verbose', true, ...
         'saveFile', prepNoiseFile);
     fprintf('Saved pre-movie noise/signal calibration to: %s\n', prepNoiseFile);
+end
+
+%% Optional grouped along_GC polygon prep (equal-count groups over significant combos)
+if RUN_GROUP_POLYGON_PREP
+    if ~exist('OUT_postAffine', 'var')
+        assert(exist(outValuesFile, 'file') == 2, ...
+            'Post-affine values file missing: %s', outValuesFile);
+        S = load(outValuesFile);
+        if isfield(S, 'OUT')
+            OUT_postAffine = S.OUT;
+        elseif isfield(S, 'D')
+            OUT_postAffine = S.D;
+        else
+            error('File %s must contain OUT or D.', outValuesFile);
+        end
+    end
+
+    sigSiteByIndex = isfinite(OUT3.pValueTD) & (OUT3.pValueTD < P.pThresh);
+    GGROUP = build_grouped_alonggc_polygons_allbins( ...
+        OUT_postAffine, Tall_V1, ...
+        'nGroups', P.groupN, ...
+        'sigSiteByIndex', sigSiteByIndex, ...
+        'preEndMs', P.preEndMs, ...
+        'postStartMs', P.postStartMs, ...
+        'preQuantilePct', P.groupPreQuantilePct, ...
+        'cMaxPostPct', P.groupCMaxPostPct, ...
+        'polygonShrink', P.groupPolygonShrink, ...
+        'saveFile', groupedFile, ...
+        'verbose', true);
+
+    fprintf('Saved grouped along_GC polygons to: %s\n', groupedFile);
+    if isfield(GGROUP, 'groupSummary')
+        disp(GGROUP.groupSummary(:, {'groupIdx','nComb','alongMin','alongMax'}));
+    end
 end
 
 %% Still plots
@@ -303,7 +375,7 @@ if RUN_STILLS
         ['OUT_postAffine.bins.stream missing. Re-run RUN_POST_AFFINE_VALUES with the ' ...
          'updated compute_projected_delta_points_allbins.m']);
 
-    prepNoiseFile = fullfile(cfg.resultsDir, sprintf('knn_noise_signal_prep_stim%d.mat', P.stimIDExample));
+    prepNoiseFile = fullfile(cfg.resultsDir, sprintf('knn_noise_signal_prep_stim%d%s.mat', P.stimIDExample, tagSuffix));
     assert(exist(prepNoiseFile, 'file') == 2, ...
         'Noise/signal prep file missing: %s. Run RUN_PREP_NOISE_SIGNAL first.', prepNoiseFile);
     Sns = load(prepNoiseFile);
@@ -412,6 +484,193 @@ if RUN_STILLS
     end
 end
 
+%% Grouped polygon stills (pre/post)
+if RUN_GROUP_POLYGON_STILLS
+    if ~exist('GGROUP', 'var')
+        assert(exist(groupedFile, 'file') == 2, ...
+            'Grouped polygon file missing: %s. Run RUN_GROUP_POLYGON_PREP first.', groupedFile);
+        Sg = load(groupedFile);
+        assert(isfield(Sg, 'G') && isstruct(Sg.G), ...
+            'Grouped file %s must contain struct G.', groupedFile);
+        GGROUP = Sg.G;
+    end
+
+    assert(isfield(GGROUP, 'groupMeanSigned') && isfield(GGROUP, 'timeWindows') && isfield(GGROUP, 'groupPolygons'), ...
+        'Grouped struct missing required fields.');
+
+    twGrp = double(GGROUP.timeWindows);
+    [~, timeIdxTargetG] = min(sum(abs(twGrp - winTarget),2));
+    [~, timeIdxPreG] = min(sum(abs(twGrp - winPre),2));
+    winTargetG = twGrp(timeIdxTargetG,:);
+    winPreG = twGrp(timeIdxPreG,:);
+
+    thrGrp = [];
+    cMaxGrp = [];
+    if isfield(GGROUP, 'calibration') && isstruct(GGROUP.calibration)
+        if isfield(GGROUP.calibration, 'thresholdPreQ')
+            thrGrp = double(GGROUP.calibration.thresholdPreQ);
+        end
+        if isfield(GGROUP.calibration, 'cMaxSuggest')
+            cMaxGrp = double(GGROUP.calibration.cMaxSuggest);
+        end
+    end
+    if ~isfinite(thrGrp) || thrGrp <= 0
+        thrGrp = 0.2;
+    end
+    if ~isfinite(cMaxGrp) || cMaxGrp <= 0
+        cMaxGrp = [];
+    end
+
+    showStimTarget = (winTargetG(1) >= P.stimOnsetMs);
+    showStimPre = (winPreG(1) >= P.stimOnsetMs);
+
+    hGroupTarget = plot_grouped_alonggc_polygon_frame( ...
+        P.stimIDExample, ALLCOORDS, RTAB384, GGROUP, timeIdxTargetG, ...
+        'alphaFullAt', thrGrp, ...
+        'colorRedAt', thrGrp, ...
+        'cMaxFixed', cMaxGrp, ...
+        'alpha', 1, ...
+        'bgColor', P.plotBgColor, ...
+        'cLow', P.plotCLow, ...
+        'cHigh', P.plotCHigh, ...
+        'hotScale', P.hotScale, ...
+        'colorHotMaxFactor', P.colorHotMaxFactor, ...
+        'hardAlphaCutoff', P.hardAlphaCutoff, ...
+        'timeLabelRef', P.timeLabelRef, ...
+        'showStimulus', showStimTarget);
+    figure(hGroupTarget.fig);
+    set(hGroupTarget.fig, 'Name', sprintf('Grouped polygons N=%d | post-stim', P.groupN), 'NumberTitle', 'off');
+    title(hGroupTarget.ax, sprintf('Grouped polygons (N=%d) | [%d %d] ms | stim %d', ...
+        P.groupN, winTargetG(1), winTargetG(2), P.stimIDExample), 'Color', 'w');
+
+    hGroupPre = plot_grouped_alonggc_polygon_frame( ...
+        P.stimIDExample, ALLCOORDS, RTAB384, GGROUP, timeIdxPreG, ...
+        'alphaFullAt', thrGrp, ...
+        'colorRedAt', thrGrp, ...
+        'cMaxFixed', cMaxGrp, ...
+        'alpha', 1, ...
+        'bgColor', P.plotBgColor, ...
+        'cLow', P.plotCLow, ...
+        'cHigh', P.plotCHigh, ...
+        'hotScale', P.hotScale, ...
+        'colorHotMaxFactor', P.colorHotMaxFactor, ...
+        'hardAlphaCutoff', P.hardAlphaCutoff, ...
+        'timeLabelRef', P.timeLabelRef, ...
+        'showStimulus', showStimPre);
+    figure(hGroupPre.fig);
+    set(hGroupPre.fig, 'Name', sprintf('Grouped polygons N=%d | pre-stim', P.groupN), 'NumberTitle', 'off');
+    title(hGroupPre.ax, sprintf('Grouped polygons (N=%d) | [%d %d] ms | stim %d', ...
+        P.groupN, winPreG(1), winPreG(2), P.stimIDExample), 'Color', 'w');
+
+    fprintf(['Grouped stills (N=%d): pre >thr %.2f%%, post >thr %.2f%% | ' ...
+             'pre routes T:%d D:%d, post routes T:%d D:%d\n'], ...
+        P.groupN, 100*hGroupPre.fracAboveThreshold, 100*hGroupTarget.fracAboveThreshold, ...
+        hGroupPre.nTargetGroups, hGroupPre.nDistrGroups, ...
+        hGroupTarget.nTargetGroups, hGroupTarget.nDistrGroups);
+end
+
+%% Grouped polygon movie rendering
+if RUN_GROUP_POLYGON_MOVIE
+    if ~exist('GGROUP', 'var')
+        assert(exist(groupedFile, 'file') == 2, ...
+            'Grouped polygon file missing: %s. Run RUN_GROUP_POLYGON_PREP first.', groupedFile);
+        Sg = load(groupedFile);
+        assert(isfield(Sg, 'G') && isstruct(Sg.G), ...
+            'Grouped file %s must contain struct G.', groupedFile);
+        GGROUP = Sg.G;
+    end
+
+    thrGrp = [];
+    cMaxGrp = [];
+    if isfield(GGROUP, 'calibration') && isstruct(GGROUP.calibration)
+        if isfield(GGROUP.calibration, 'thresholdPreQ')
+            thrGrp = double(GGROUP.calibration.thresholdPreQ);
+        end
+        if isfield(GGROUP.calibration, 'cMaxSuggest')
+            cMaxGrp = double(GGROUP.calibration.cMaxSuggest);
+        end
+    end
+    if ~isfinite(thrGrp) || thrGrp <= 0
+        thrGrp = 0.2;
+    end
+    if ~isfinite(cMaxGrp) || cMaxGrp <= 0
+        cMaxGrp = [];
+    end
+
+    outMovieGrouped = fullfile(cfg.resultsDir, ...
+        sprintf('V1_attentiondiff_groupedpolygons_N%d%s.mp4', P.groupN, tagSuffix));
+
+    MOV_GROUP = make_grouped_alonggc_polygon_movie( ...
+        outMovieGrouped, P.stimIDExample, ALLCOORDS, RTAB384, GGROUP, ...
+        'alphaFullAt', thrGrp, ...
+        'colorRedAt', thrGrp, ...
+        'cMaxFixed', cMaxGrp, ...
+        'alpha', P.plotAlpha, ...
+        'bgColor', P.plotBgColor, ...
+        'cLow', P.plotCLow, ...
+        'cHigh', P.plotCHigh, ...
+        'hotScale', P.hotScale, ...
+        'colorHotMaxFactor', P.colorHotMaxFactor, ...
+        'hardAlphaCutoff', P.hardAlphaCutoff, ...
+        'timeLabelRef', P.timeLabelRef, ...
+        'stimOnsetMs', P.stimOnsetMs, ...
+        'frameRate', 10, ...
+        'quality', 95, ...
+        'verbose', true);
+    fprintf('Saved grouped polygon movie to: %s\n', MOV_GROUP.outMovie);
+end
+
+%% Grouped activity time-series by along_GC group
+if RUN_GROUP_POLYGON_TIMESERIES
+    if ~exist('GGROUP', 'var')
+        assert(exist(groupedFile, 'file') == 2, ...
+            'Grouped polygon file missing: %s. Run RUN_GROUP_POLYGON_PREP first.', groupedFile);
+        Sg = load(groupedFile);
+        assert(isfield(Sg, 'G') && isstruct(Sg.G), ...
+            'Grouped file %s must contain struct G.', groupedFile);
+        GGROUP = Sg.G;
+    end
+
+    hTrace = plot_grouped_alonggc_timeseries( ...
+        GGROUP, ...
+        'plotMode', P.groupTraceMode, ...
+        'timeRef', 'center', ...
+        'onsetMs', P.stimOnsetMs, ...
+        'cmapName', 'parula', ...
+        'lineWidth', 1.8);
+    set(hTrace.fig, 'Name', sprintf('Grouped activity traces N=%d', P.groupN), 'NumberTitle', 'off');
+end
+
+%% exGauss_mod fits for grouped traces
+if RUN_GROUP_POLYGON_EXGAUSS_FIT
+    if ~exist('GGROUP', 'var')
+        assert(exist(groupedFile, 'file') == 2, ...
+            'Grouped polygon file missing: %s. Run RUN_GROUP_POLYGON_PREP first.', groupedFile);
+        Sg = load(groupedFile);
+        assert(isfield(Sg, 'G') && isstruct(Sg.G), ...
+            'Grouped file %s must contain struct G.', groupedFile);
+        GGROUP = Sg.G;
+    end
+
+    FITG = fit_grouped_alonggc_exgauss( ...
+        GGROUP, ...
+        'timeRef', 'center', ...
+        'fitStartMs', P.groupExGaussFitStartMs, ...
+        'fitEndMs', P.groupExGaussFitEndMs, ...
+        'smoothW', P.groupExGaussSmoothW, ...
+        'minSigma', P.groupExGaussMinSigma, ...
+        'maxSigma', P.groupExGaussMaxSigma, ...
+        'sigMinConsecutiveBins', P.groupSigMinRunBins, ...
+        'sigSearchStartMs', P.groupSigSearchStartMs, ...
+        'sigUseAbs', true, ...
+        'cmapName', 'parula', ...
+        'plotMode', 'overlay', ...
+        'lineWidth', 1.8, ...
+        'verbose', true);
+    set(FITG.fig, 'Name', sprintf('Grouped exGauss fits N=%d', P.groupN), 'NumberTitle', 'off');
+    disp(FITG.summary);
+end
+
 %% Optional movie rendering
 if RUN_MOVIE
     if ~exist('OUT_postAffine', 'var')
@@ -432,7 +691,7 @@ if RUN_MOVIE
         ['OUT_postAffine.bins.stream missing. Re-run RUN_POST_AFFINE_VALUES with the ' ...
          'updated compute_projected_delta_points_allbins.m']);
 
-    prepNoiseFile = fullfile(cfg.resultsDir, sprintf('knn_noise_signal_prep_stim%d.mat', P.stimIDExample));
+    prepNoiseFile = fullfile(cfg.resultsDir, sprintf('knn_noise_signal_prep_stim%d%s.mat', P.stimIDExample, tagSuffix));
     assert(exist(prepNoiseFile, 'file') == 2, ...
         'Noise/signal prep file missing: %s. Run RUN_PREP_NOISE_SIGNAL first.', prepNoiseFile);
     Sns = load(prepNoiseFile);
@@ -452,7 +711,7 @@ if RUN_MOVIE
         cMaxUse = [];
     end
 
-    outMovie = fullfile(cfg.resultsDir, sprintf('V1_attentiondiff_movie_postaffine_K%d.mp4', Kuse));
+    outMovie = fullfile(cfg.resultsDir, sprintf('V1_attentiondiff_movie_postaffine_K%d%s.mp4', Kuse, tagSuffix));
     MOV = make_post_affine_attention_movie( ...
         outMovie, P.stimIDExample, ALLCOORDS, RTAB384, OUT_postAffine, ...
         'K', Kuse, ...
