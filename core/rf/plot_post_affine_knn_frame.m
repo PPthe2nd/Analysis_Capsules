@@ -7,6 +7,7 @@ function h = plot_post_affine_knn_frame(stimID_example, ALLCOORDS, RTAB384, binD
 
 p = inputParser;
 p.addParameter('K', 30, @(x) isnumeric(x) && isscalar(x) && x >= 1);
+p.addParameter('siteWeightsByIndex', [], @(x) isempty(x) || (isnumeric(x) && isvector(x)));
 p.addParameter('alphaFullAt', 0.2, @(x) isnumeric(x) && isscalar(x) && x > 0);
 p.addParameter('colorRedAt', [], @(x) isempty(x) || (isnumeric(x) && isscalar(x) && x > 0));
 p.addParameter('cMaxFixed', [], @(x) isempty(x) || (isnumeric(x) && isscalar(x) && x > 0));
@@ -25,7 +26,8 @@ p.addParameter('showStimulus', true, @(x) islogical(x) && isscalar(x));
 p.parse(varargin{:});
 opt = p.Results;
 
-[x, y, vSigned, stream] = smooth_post_affine_bin_knn(binData, round(opt.K), opt.enforceK);
+[x, y, vSigned, stream] = smooth_post_affine_bin_knn( ...
+    binData, round(opt.K), opt.enforceK, opt.siteWeightsByIndex);
 V = route_by_stream(vSigned, stream);
 
 if isempty(opt.cMaxFixed)

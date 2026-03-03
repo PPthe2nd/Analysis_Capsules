@@ -13,7 +13,8 @@ RUN_GROUP_POLYGON_PREP = false;
 RUN_GROUP_POLYGON_STILLS = false;
 RUN_GROUP_POLYGON_MOVIE = false;
 RUN_GROUP_POLYGON_TIMESERIES = false;
-RUN_GROUP_POLYGON_EXGAUSS_FIT = true;
+RUN_GROUP_POLYGON_SIGMOID_FIT = true;
+RUN_GROUP_POLYGON_EXGAUSS_FIT = false;
 
 %% Central parameters
 P = struct();
@@ -68,13 +69,35 @@ P.groupN = 8;                        % number of along_GC quantile groups
 P.groupPolygonShrink = 0.8;          % boundary() shrink factor for group polygons
 P.groupPreQuantilePct = P.preQuantilePct; % grouped threshold from pre-stim quantile
 P.groupCMaxPostPct = P.cMaxPostPct;  % grouped color max from post-stim quantile
+P.knnUseSiteWeights = true;          % if true: reliability-weighted KNN averaging (simple per-combo weighting)
+P.groupUseSiteWeights = true;        % if true: reliability-weighted group mean (decoder-style)
+P.groupWeightLambda = 1e-6;          % stabilizer in weight denominator
+P.groupWeightUseNmatch = true;       % multiply by sqrt(Nmatch) where Nmatch = wY + wP
+P.groupWeightClipPct = 95;           % cap extreme site weights at this percentile
+P.groupWeightMin = 0;                % optional floor on positive weights (0 = disabled)
 P.groupTraceMode = 'overlay';        % 'overlay' (all curves in one axes) or 'subplots'
+P.groupTraceSmoothW = 3;             % moving-average width (bins) for grouped traces
+P.groupTraceHalfMaxFrac = 0.5;       % first-crossing level as fraction of smoothed max
+P.groupTraceHalfSearchStartMs = 0;   % search start for half-max crossing
+P.groupTraceShowHalfMarkers = true;  % draw circle markers at half-max crossing
+P.groupTraceHalfMarkerSize = 7;      % marker size for half-max points
+P.groupSigmoidFitStartMs = 0;        % shared-slope sigmoid fit start (ms)
+P.groupSigmoidFitEndMs = 500;        % shared-slope sigmoid fit end (ms)
+P.groupSigmoidSmoothW = 3;           % smoothing width (bins) before sigmoid fit
+P.groupSigmoidUseAbs = false;        % fit abs(trace) if true
+P.groupSigmoidMinTau = 5;            % lower bound on shared slope parameter tau
+P.groupSigmoidMaxTau = 400;          % upper bound on shared slope parameter tau
+P.groupSigmoidInitTau = 40;          % initial tau (ms)
+P.groupSigmoidShowT50 = true;        % show model t50 marker per group
+P.groupSigmoidT50MarkerSize = 7;     % marker size for model t50 points
+P.groupSigmoidRegressionX = 'alongMid'; % regression x-axis: 'alongMid'|'groupIdx'|'nComb'
+P.groupSigmoidExcludeHighestXRegression = true; % exclude highest-x point from t50 regression
 P.groupExGaussFitStartMs = -200;     % fit start (ms)
 P.groupExGaussFitEndMs = 500;        % fit end (ms)
 P.groupExGaussSmoothW = 1;           % moving-average width before fit (bins)
 P.groupExGaussMinSigma = 5;          % lower bound for sigma
 P.groupExGaussMaxSigma = 400;        % upper bound for sigma
-P.groupSigMinRunBins = 3;            % onset criterion: >= this many consecutive significant bins
+P.groupSigMinRunBins = 5;            % onset criterion: >= this many consecutive significant bins
 P.groupSigSearchStartMs = 0;         % onset search starts at this time (ms)
 P.stillRunConsistencyCheck = false;  % expensive global KNN check; disable for speed
 P.timeLabelRef = 'start';            % 'start' keeps stimulus onset aligned at 0 ms
@@ -134,6 +157,52 @@ end
 
 fprintf('Median d'': %.3f\n', median(OUT3.dprime, 'omitnan'));
 fprintf('Median index: %.3f\n', median(OUT3.index, 'omitnan'));
+
+% Build shared significant-site mask and optional fixed per-site reliability weights.
+sigSiteByIndexAll = isfinite(OUT3.pValueTD) & (OUT3.pValueTD < P.pThresh);
+siteWeightsByIndexAll = [];
+if P.knnUseSiteWeights || P.groupUseSiteWeights
+    assert(all(isfield(OUT3, {'muT','muD','varT','varD'})), ...
+        'OUT3 must contain muT/muD/varT/varD for site weighting.');
+    dSite = double(OUT3.muT(:) - OUT3.muD(:));
+    varSite = 0.5 * (double(OUT3.varT(:)) + double(OUT3.varD(:)));
+    varSite(~isfinite(varSite) | varSite < 0) = 0;
+    den = sqrt(varSite + max(P.groupWeightLambda, 0));
+    den(~isfinite(den) | den <= 0) = NaN;
+    siteWeightsByIndexAll = abs(dSite) ./ den;
+
+    if P.groupWeightUseNmatch
+        assert(all(isfield(OUT3, {'wY','wP'})), ...
+            'OUT3 must contain wY/wP when P.groupWeightUseNmatch=true.');
+        nMatch = double(OUT3.wY(:) + OUT3.wP(:));
+        nMatch(~isfinite(nMatch) | nMatch < 0) = 0;
+        siteWeightsByIndexAll = siteWeightsByIndexAll .* sqrt(nMatch);
+    end
+
+    siteWeightsByIndexAll(~isfinite(siteWeightsByIndexAll) | siteWeightsByIndexAll < 0) = 0;
+    siteWeightsByIndexAll(~sigSiteByIndexAll) = 0;
+
+    wPos = siteWeightsByIndexAll(siteWeightsByIndexAll > 0);
+    if ~isempty(wPos) && isfinite(P.groupWeightClipPct) && P.groupWeightClipPct > 0 && P.groupWeightClipPct < 100
+        wCap = prctile(wPos, P.groupWeightClipPct);
+        if isfinite(wCap) && wCap > 0
+            siteWeightsByIndexAll = min(siteWeightsByIndexAll, wCap);
+        end
+    end
+    if isfinite(P.groupWeightMin) && P.groupWeightMin > 0
+        pos = siteWeightsByIndexAll > 0;
+        siteWeightsByIndexAll(pos) = max(siteWeightsByIndexAll(pos), P.groupWeightMin);
+    end
+
+    wPos = siteWeightsByIndexAll(siteWeightsByIndexAll > 0);
+    if isempty(wPos)
+        warning('Site weighting requested but no positive site weights were obtained. Falling back to unweighted averaging.');
+        siteWeightsByIndexAll = [];
+    else
+        fprintf(['Fixed site weights ready: nPos=%d | min/median/max=%.6g / %.6g / %.6g | clip p%.2f\n'], ...
+            numel(wPos), min(wPos), median(wPos), max(wPos), P.groupWeightClipPct);
+    end
+end
 
 %% Histogram: attention index distribution
 if RUN_HISTOGRAM
@@ -303,6 +372,10 @@ if RUN_PREP_NOISE_SIGNAL
     end
 
     prepNoiseFile = fullfile(cfg.resultsDir, sprintf('knn_noise_signal_prep_stim%d%s.mat', P.stimIDExample, tagSuffix));
+    siteWeightsKNN = [];
+    if P.knnUseSiteWeights
+        siteWeightsKNN = siteWeightsByIndexAll;
+    end
     PREP_NOISE = analyze_knn_noise_signal_thresholds( ...
         OUT_postAffine, Tall_V1, ...
         'KList', P.prepKList, ...
@@ -313,6 +386,7 @@ if RUN_PREP_NOISE_SIGNAL
         'cMaxPostPct', P.cMaxPostPct, ...
         'kRef', P.prepK, ...
         'enforceK', true, ...
+        'siteWeightsByIndex', siteWeightsKNN, ...
         'makePlot', true, ...
         'verbose', true, ...
         'saveFile', prepNoiseFile);
@@ -334,11 +408,17 @@ if RUN_GROUP_POLYGON_PREP
         end
     end
 
-    sigSiteByIndex = isfinite(OUT3.pValueTD) & (OUT3.pValueTD < P.pThresh);
+    sigSiteByIndex = sigSiteByIndexAll;
+    siteWeightsByIndex = [];
+    if P.groupUseSiteWeights
+        siteWeightsByIndex = siteWeightsByIndexAll;
+    end
+
     GGROUP = build_grouped_alonggc_polygons_allbins( ...
         OUT_postAffine, Tall_V1, ...
         'nGroups', P.groupN, ...
         'sigSiteByIndex', sigSiteByIndex, ...
+        'siteWeightsByIndex', siteWeightsByIndex, ...
         'preEndMs', P.preEndMs, ...
         'postStartMs', P.postStartMs, ...
         'preQuantilePct', P.groupPreQuantilePct, ...
@@ -400,13 +480,17 @@ if RUN_STILLS
         fprintf('Prep expected exceedance at K=%d: pre=%.2f%%, post=%.2f%%\n', ...
             Kuse, 100*double(Tns.preExceedFrac(rowK)), 100*double(Tns.postExceedFrac(rowK)));
     end
+    siteWeightsKNN = [];
+    if P.knnUseSiteWeights
+        siteWeightsKNN = siteWeightsByIndexAll;
+    end
 
     if P.stillRunConsistencyCheck
         % Consistency check: recompute exceedance directly from OUT_postAffine.
         preMaskBins = R_resp.timeWindows(:,2) <= P.preEndMs;
         postMaskBins = R_resp.timeWindows(:,1) >= P.postStartMs;
         Scheck = summarize_post_affine_threshold_exceedance( ...
-            OUT_postAffine, Kuse, thrUse, preMaskBins, postMaskBins, false);
+            OUT_postAffine, Kuse, thrUse, preMaskBins, postMaskBins, false, siteWeightsKNN);
         fprintf('Consistency check from OUT_postAffine: pre=%.2f%%, post=%.2f%%\n', ...
             100*Scheck.preFrac, 100*Scheck.postFrac);
         if ismember('preExceedFrac', Tns.Properties.VariableNames) && ismember('postExceedFrac', Tns.Properties.VariableNames)
@@ -429,6 +513,7 @@ if RUN_STILLS
     hSmall = plot_post_affine_knn_frame( ...
         P.stimIDExample, ALLCOORDS, RTAB384, OUT_postAffine.bins(timeIdxTarget), ...
         'K', Kuse, ...
+        'siteWeightsByIndex', siteWeightsKNN, ...
         'alphaFullAt', thrUse, ...
         'colorRedAt', thrUse, ...
         'cMaxFixed', cMaxUse, ...
@@ -458,6 +543,7 @@ if RUN_STILLS
     hPre = plot_post_affine_knn_frame( ...
         P.stimIDExample, ALLCOORDS, RTAB384, OUT_postAffine.bins(timeIdxPre), ...
         'K', Kuse, ...
+        'siteWeightsByIndex', siteWeightsKNN, ...
         'alphaFullAt', thrUse, ...
         'colorRedAt', thrUse, ...
         'cMaxFixed', cMaxUse, ...
@@ -637,8 +723,53 @@ if RUN_GROUP_POLYGON_TIMESERIES
         'timeRef', 'center', ...
         'onsetMs', P.stimOnsetMs, ...
         'cmapName', 'parula', ...
-        'lineWidth', 1.8);
+        'lineWidth', 1.8, ...
+        'smoothW', P.groupTraceSmoothW, ...
+        'halfMaxFrac', P.groupTraceHalfMaxFrac, ...
+        'halfMaxSearchStartMs', P.groupTraceHalfSearchStartMs, ...
+        'showHalfMaxMarkers', P.groupTraceShowHalfMarkers, ...
+        'halfMaxMarkerSize', P.groupTraceHalfMarkerSize);
     set(hTrace.fig, 'Name', sprintf('Grouped activity traces N=%d', P.groupN), 'NumberTitle', 'off');
+    if isfield(hTrace, 'summary') && istable(hTrace.summary)
+        disp(hTrace.summary(:, {'groupIdx','tHalf','yHalf','yMaxSmooth'}));
+    end
+end
+
+%% Shared-slope sigmoid fits for grouped traces
+if RUN_GROUP_POLYGON_SIGMOID_FIT
+    if ~exist('GGROUP', 'var')
+        assert(exist(groupedFile, 'file') == 2, ...
+            'Grouped polygon file missing: %s. Run RUN_GROUP_POLYGON_PREP first.', groupedFile);
+        Sg = load(groupedFile);
+        assert(isfield(Sg, 'G') && isstruct(Sg.G), ...
+            'Grouped file %s must contain struct G.', groupedFile);
+        GGROUP = Sg.G;
+    end
+
+    FITS = fit_grouped_alonggc_sigmoid_sharedslope( ...
+        GGROUP, ...
+        'timeRef', 'center', ...
+        'fitStartMs', P.groupSigmoidFitStartMs, ...
+        'fitEndMs', P.groupSigmoidFitEndMs, ...
+        'smoothW', P.groupSigmoidSmoothW, ...
+        'useAbs', P.groupSigmoidUseAbs, ...
+        'minTau', P.groupSigmoidMinTau, ...
+        'maxTau', P.groupSigmoidMaxTau, ...
+        'initTau', P.groupSigmoidInitTau, ...
+        'plotMode', 'overlay', ...
+        'cmapName', 'parula', ...
+        'lineWidth', 1.8, ...
+        'showT50Markers', P.groupSigmoidShowT50, ...
+        't50MarkerSize', P.groupSigmoidT50MarkerSize, ...
+        'showT50Regression', true, ...
+        'regressionX', P.groupSigmoidRegressionX, ...
+        'excludeHighestXFromRegression', P.groupSigmoidExcludeHighestXRegression, ...
+        'onsetMs', P.stimOnsetMs, ...
+        'verbose', true);
+    if ~isempty(FITS.fig)
+        set(FITS.fig, 'Name', sprintf('Grouped sigmoid fits N=%d', P.groupN), 'NumberTitle', 'off');
+    end
+    disp(FITS.summary(:, {'groupIdx','A','t50','tauShared','rmse','nFitPoints','status'}));
 end
 
 %% exGauss_mod fits for grouped traces
@@ -710,11 +841,16 @@ if RUN_MOVIE
     if ~isfinite(cMaxUse) || cMaxUse <= 0
         cMaxUse = [];
     end
+    siteWeightsKNN = [];
+    if P.knnUseSiteWeights
+        siteWeightsKNN = siteWeightsByIndexAll;
+    end
 
     outMovie = fullfile(cfg.resultsDir, sprintf('V1_attentiondiff_movie_postaffine_K%d%s.mp4', Kuse, tagSuffix));
     MOV = make_post_affine_attention_movie( ...
         outMovie, P.stimIDExample, ALLCOORDS, RTAB384, OUT_postAffine, ...
         'K', Kuse, ...
+        'siteWeightsByIndex', siteWeightsKNN, ...
         'alphaFullAt', thrUse, ...
         'colorRedAt', thrUse, ...
         'cMaxFixed', cMaxUse, ...
