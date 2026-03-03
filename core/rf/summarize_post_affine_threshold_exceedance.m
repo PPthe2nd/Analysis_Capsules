@@ -1,9 +1,12 @@
-function S = summarize_post_affine_threshold_exceedance(OUT_postAffine, K, threshold, preMask, postMask, enforceK)
+function S = summarize_post_affine_threshold_exceedance(OUT_postAffine, K, threshold, preMask, postMask, enforceK, siteWeightsByIndex)
 % SUMMARIZE_POST_AFFINE_THRESHOLD_EXCEEDANCE
 % Compute threshold exceedance from post-affine bins using KNN-smoothed abs values.
 
 if nargin < 6 || isempty(enforceK)
     enforceK = true;
+end
+if nargin < 7
+    siteWeightsByIndex = [];
 end
 
 assert(isstruct(OUT_postAffine) && isfield(OUT_postAffine, 'bins') && ~isempty(OUT_postAffine.bins), ...
@@ -25,7 +28,7 @@ preVals = [];
 postVals = [];
 
 for tb = 1:nBins
-    [~, ~, vSigned, stream] = smooth_post_affine_bin_knn(bins(tb), K, enforceK);
+    [~, ~, vSigned, stream] = smooth_post_affine_bin_knn(bins(tb), K, enforceK, siteWeightsByIndex);
     if isempty(vSigned)
         continue;
     end

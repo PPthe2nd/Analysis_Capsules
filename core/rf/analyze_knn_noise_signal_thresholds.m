@@ -15,6 +15,7 @@ function R = analyze_knn_noise_signal_thresholds(D, Tall_V1, varargin)
 %   'cMaxPostPct'     (default 95)     % suggested cMax percentile on post-stim |value|
 %   'kRef'            (default 30)     % K used for default movie suggestions
 %   'enforceK'        (default true)   % error if a bin has fewer than max(KList) points
+%   'siteWeightsByIndex' (default [])  % fixed per-site weights for KNN averaging
 %   'makePlot'        (default true)
 %   'verbose'         (default true)
 %   'saveFile'        (default '')
@@ -35,6 +36,7 @@ p.addParameter('alphaFloorPct', 80, @(x) isnumeric(x) && isscalar(x) && x > 0 &&
 p.addParameter('cMaxPostPct', 95, @(x) isnumeric(x) && isscalar(x) && x > 0 && x < 100);
 p.addParameter('kRef', 30, @(x) isnumeric(x) && isscalar(x) && x >= 1);
 p.addParameter('enforceK', true, @(x) islogical(x) && isscalar(x));
+p.addParameter('siteWeightsByIndex', [], @(x) isempty(x) || (isnumeric(x) && isvector(x)));
 p.addParameter('makePlot', true, @(x) islogical(x) && isscalar(x));
 p.addParameter('verbose', true, @(x) islogical(x) && isscalar(x));
 p.addParameter('saveFile', '', @(x) ischar(x) || isstring(x));
@@ -119,6 +121,16 @@ for tb = 1:nBins
     end
 
     s = s(ok); q = q(ok); d = d(ok); x = x(ok); y = y(ok); str = str(ok);
+    if isempty(opt.siteWeightsByIndex)
+        wSite = ones(size(s));
+    else
+        wBySite = double(opt.siteWeightsByIndex(:));
+        wSite = zeros(size(s));
+        sRound = round(s);
+        okW = isfinite(sRound) & sRound >= 1 & sRound <= numel(wBySite);
+        wSite(okW) = wBySite(sRound(okW));
+        wSite(~isfinite(wSite) | wSite < 0) = 0;
+    end
     if ~isfield(B(tb), 'stimIdxSource')
         error('D.bins(%d) is missing stimIdxSource; re-run post-affine export.', tb);
     end
@@ -158,6 +170,7 @@ for tb = 1:nBins
         xPool = x(idxPool);
         yPool = y(idxPool);
         dPool = d(idxPool);
+        wPool = wSite(idxPool);
         aPool = along(idxPool);
 
         dist2 = (xPool - x(i)).^2 + (yPool - y(i)).^2;
@@ -168,10 +181,16 @@ for tb = 1:nBins
         end
         idx = ord(1:kUseMax);
         csum = cumsum(dPool(idx));
+        csumW = cumsum(wPool(idx));
+        csumWD = cumsum(wPool(idx) .* dPool(idx));
         for kk = 1:nK
             k = KList(kk);
             if k <= kUseMax
-                vLocal(i,kk) = csum(k) / k;
+                if csumW(k) > 0
+                    vLocal(i,kk) = csumWD(k) / csumW(k);
+                else
+                    vLocal(i,kk) = csum(k) / k;
+                end
                 a = aPool(idx(1:k));
                 a = a(isfinite(a));
                 if ~isempty(a)
@@ -349,7 +368,8 @@ end
 R = struct();
 R.meta = struct('created', datestr(now,30), 'nComb', nComb, 'nBins', nBins, ...
     'KList', KList, 'preEndMs', opt.preEndMs, 'postStartMs', opt.postStartMs, ...
-    'preQuantilePct', opt.preQuantilePct, 'kRefRequested', opt.kRef);
+    'preQuantilePct', opt.preQuantilePct, 'kRefRequested', opt.kRef, ...
+    'useSiteWeights', ~isempty(opt.siteWeightsByIndex));
 R.tCenter = tCenter;
 R.preMask = preMask;
 R.postMask = postMask;
