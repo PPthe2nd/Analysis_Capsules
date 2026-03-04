@@ -26,6 +26,7 @@ repoRoot = cfg.repoRoot;
 run(fullfile(repoRoot, 'analyses', 'line_stimuli', 'Line_Stimuli.m'));
 run(fullfile(repoRoot, 'analyses', 'line_stimuli', 'Analyse_Line_Stimuli.m'));
 % run(fullfile(repoRoot, 'analyses', 'line_stimuli', 'Attention_Line_Stimuli.m'));
+% OUT_colorAtt = Attention_ColorPref_Line_Stimuli(); % interaction between color tuning and attenion
 
 % LATENCY
 % run(fullfile(repoRoot, 'analyses', 'latency', 'Latency_analysis_SVM.m'));
