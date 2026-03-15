@@ -9,7 +9,7 @@ RUN_PREP_ANCHOR_KNN = false;
 RUN_PREP_NOISE_SIGNAL = false;
 RUN_STILLS = false;
 RUN_MOVIE = false;
-RUN_GROUP_POLYGON_PREP = false;
+RUN_GROUP_POLYGON_PREP = true;
 RUN_GROUP_POLYGON_STILLS = false;
 RUN_GROUP_POLYGON_MOVIE = false;
 RUN_GROUP_POLYGON_TIMESERIES = false;
@@ -19,6 +19,7 @@ RUN_GROUP_POLYGON_EXGAUSS_FIT = false;
 %% Central parameters
 P = struct();
 P.timeIdx3 = 3;                      % 3-bin dataset: 300-500 ms
+P.groupN = 8;                        % number of along_GC quantile groups
 % P.respCapsulesFile = 'Resp_capsules_N_d12.mat'; % high-resolution response windows
 % P.resultTag = 'd12';                 % suffix for output files to avoid overwriting runs
 % P.targetWin = [300 310];             % target window request [ms] (nearest bin selected)
@@ -29,6 +30,9 @@ P.targetWin = [300 320];
 P.targetWinPre = [-100 -80];
 P.targetWin10 = P.targetWin;         % backwards-compatible alias
 P.pThresh = 0.05;                    % hard significance rule
+P.siteInclusionMode = 'visual'; % 'significant' or 'visual'
+P.visualSNRthr = 0.70;               % used when siteInclusionMode='visual'
+P.siteWeightMode = 'dprime';    % 'reliability' or 'dprime'
 P.siteRange = 1:512;
 P.stimIDExample = 38;
 P.idxClip = 2;                       % histogram clipping
@@ -65,14 +69,13 @@ P.postStartMs = 300;                 % post bins: start >= this time
 P.preQuantilePct = 99.98;               % threshold from pre-stim |value| quantile
 P.alphaFloorPct = 80;                % suggested alpha floor from pre-stim
 P.cMaxPostPct = 95;                  % suggested cMax from post-stim
-P.groupN = 8;                        % number of along_GC quantile groups
 P.groupPolygonShrink = 0.8;          % boundary() shrink factor for group polygons
 P.groupPreQuantilePct = P.preQuantilePct; % grouped threshold from pre-stim quantile
 P.groupCMaxPostPct = P.cMaxPostPct;  % grouped color max from post-stim quantile
-P.knnUseSiteWeights = true;          % if true: reliability-weighted KNN averaging (simple per-combo weighting)
-P.groupUseSiteWeights = true;        % if true: reliability-weighted group mean (decoder-style)
+P.knnUseSiteWeights = true;          % if true: fixed site-weighted KNN averaging
+P.groupUseSiteWeights = true;        % if true: fixed site-weighted group mean
 P.groupWeightLambda = 1e-6;          % stabilizer in weight denominator
-P.groupWeightUseNmatch = true;       % multiply by sqrt(Nmatch) where Nmatch = wY + wP
+P.groupWeightUseNmatch = true;       % in reliability mode, multiply by sqrt(Nmatch), Nmatch = wY + wP
 P.groupWeightClipPct = 95;           % cap extreme site weights at this percentile
 P.groupWeightMin = 0;                % optional floor on positive weights (0 = disabled)
 P.groupTraceMode = 'overlay';        % 'overlay' (all curves in one axes) or 'subplots'
@@ -91,7 +94,7 @@ P.groupSigmoidInitTau = 40;          % initial tau (ms)
 P.groupSigmoidShowT50 = true;        % show model t50 marker per group
 P.groupSigmoidT50MarkerSize = 7;     % marker size for model t50 points
 P.groupSigmoidRegressionX = 'alongMid'; % regression x-axis: 'alongMid'|'groupIdx'|'nComb'
-P.groupSigmoidExcludeHighestXRegression = true; % exclude highest-x point from t50 regression
+P.groupSigmoidExcludeHighestXRegression = false; % exclude highest-x point from t50 regression
 P.groupExGaussFitStartMs = -200;     % fit start (ms)
 P.groupExGaussFitEndMs = 500;        % fit end (ms)
 P.groupExGaussSmoothW = 1;           % moving-average width before fit (bins)
@@ -111,16 +114,51 @@ end
 runTag = regexprep(runTag, '[^A-Za-z0-9_-]', '_');
 tagSuffix = ['_' runTag];
 
+siteInclusionMode = lower(string(P.siteInclusionMode));
+siteWeightMode = lower(string(P.siteWeightMode));
+assert(any(siteInclusionMode == ["significant","visual"]), ...
+    'P.siteInclusionMode must be ''significant'' or ''visual''.');
+assert(any(siteWeightMode == ["reliability","dprime"]), ...
+    'P.siteWeightMode must be ''reliability'' or ''dprime''.');
+
+selectionTagSuffix = '';
+if siteInclusionMode ~= "significant" || siteWeightMode ~= "reliability"
+    modeParts = strings(0,1);
+    if siteInclusionMode == "visual"
+        snrTag = strrep(sprintf('%.2f', P.visualSNRthr), '.', 'p');
+        modeParts(end+1) = "allvis"; %#ok<SAGROW>
+        modeParts(end+1) = "snr" + string(snrTag); %#ok<SAGROW>
+    end
+    if siteWeightMode == "dprime"
+        modeParts(end+1) = "wdprime"; %#ok<SAGROW>
+    elseif siteWeightMode == "reliability" && siteInclusionMode ~= "significant"
+        modeParts(end+1) = "wreliability"; %#ok<SAGROW>
+    end
+    selectionTagSuffix = ['_' char(strjoin(modeParts, '_'))];
+end
+
 
 %% Required context
 cfg = config();
-assert(exist('RTAB384','var') == 1, 'RTAB384 must exist in workspace.');
-assert(exist('ALLCOORDS','var') == 1, 'ALLCOORDS must exist in workspace.');
+TabFile = 'ObjAtt_lines_monkeyN_20220201_B1';
 
-if ~exist('Tall_V1', 'var') || ~isstruct(Tall_V1)
-    S = load(fullfile(cfg.matDir, 'Tall_V1_lines_N.mat'));  % loads Tall_V1
-    Tall_V1 = S.Tall_V1;
-end
+Sgeo = load(fullfile(cfg.logsDir, TabFile));
+assert(isfield(Sgeo, 'ALLCOORDS'), ...
+    '%s must contain ALLCOORDS.', fullfile(cfg.logsDir, TabFile));
+ALLCOORDS = Sgeo.ALLCOORDS;
+
+Srtab = load(fullfile(cfg.logsDir, 'RTAB384.mat'));
+assert(isfield(Srtab, 'RTAB384'), ...
+    '%s must contain RTAB384.', fullfile(cfg.logsDir, 'RTAB384.mat'));
+RTAB384 = Srtab.RTAB384;
+
+S = load(fullfile(cfg.matDir, 'Tall_V1_lines_N.mat'));
+assert(isfield(S, 'Tall_V1') && isstruct(S.Tall_V1), ...
+    'Tall_V1_lines_N.mat must contain struct Tall_V1.');
+Tall_V1 = S.Tall_V1;
+
+% Avoid cross-script contamination when switching between V1 and V4 runs.
+clear R_resp OUT_postAffine GGROUP FITS FITG OUTTarget OUTPre
 
 %% Load 3-bin response + normalization and get baseline OUT3
 S = load(fullfile(cfg.matDir, 'SNR_capsules_N_d12.mat'));   % loads R
@@ -158,20 +196,63 @@ end
 fprintf('Median d'': %.3f\n', median(OUT3.dprime, 'omitnan'));
 fprintf('Median index: %.3f\n', median(OUT3.index, 'omitnan'));
 
-% Build shared significant-site mask and optional fixed per-site reliability weights.
+snrFields = {'yellowEarly','yellowLate','purpleEarly','purpleLate'};
+nSitesAll = numel(OUT3.pValueTD);
+SNRmatAll = nan(nSitesAll, numel(snrFields));
+for k = 1:numel(snrFields)
+    assert(isfield(SNRnorm, snrFields{k}), ...
+        'SNR normalization struct missing field %s.', snrFields{k});
+    v = double(SNRnorm.(snrFields{k})(:));
+    assert(numel(v) >= nSitesAll, ...
+        'SNR normalization field %s has only %d values; need at least %d.', ...
+        snrFields{k}, numel(v), nSitesAll);
+    SNRmatAll(:,k) = v(1:nSitesAll);
+end
+bestSNRAll = max(SNRmatAll, [], 2, 'omitnan');
+
+% Build shared site-selection mask and optional fixed per-site weights.
 sigSiteByIndexAll = isfinite(OUT3.pValueTD) & (OUT3.pValueTD < P.pThresh);
+visSiteByIndexAll = isfinite(bestSNRAll) & (bestSNRAll > P.visualSNRthr);
+selectedSiteByIndexAll = sigSiteByIndexAll;
+selectedSiteLabel = sprintf('significant sites (pTD < %.3f)', P.pThresh);
+switch char(siteInclusionMode)
+    case 'significant'
+        selectedSiteByIndexAll = sigSiteByIndexAll;
+    case 'visual'
+        selectedSiteByIndexAll = visSiteByIndexAll;
+        selectedSiteLabel = sprintf('visually responsive sites (bestSNR > %.2f)', P.visualSNRthr);
+end
+fprintf('Site inclusion mode: %s | kept %d / %d sites\n', ...
+    selectedSiteLabel, nnz(selectedSiteByIndexAll), numel(selectedSiteByIndexAll));
+if siteWeightMode == "dprime"
+    fprintf('Site weight mode: pure |d''| (no sqrt(Nmatch) multiplier)\n');
+else
+    fprintf('Site weight mode: %s\n', char(siteWeightMode));
+end
+
 siteWeightsByIndexAll = [];
 if P.knnUseSiteWeights || P.groupUseSiteWeights
-    assert(all(isfield(OUT3, {'muT','muD','varT','varD'})), ...
-        'OUT3 must contain muT/muD/varT/varD for site weighting.');
-    dSite = double(OUT3.muT(:) - OUT3.muD(:));
-    varSite = 0.5 * (double(OUT3.varT(:)) + double(OUT3.varD(:)));
-    varSite(~isfinite(varSite) | varSite < 0) = 0;
-    den = sqrt(varSite + max(P.groupWeightLambda, 0));
-    den(~isfinite(den) | den <= 0) = NaN;
-    siteWeightsByIndexAll = abs(dSite) ./ den;
+    switch char(siteWeightMode)
+        case 'reliability'
+            assert(all(isfield(OUT3, {'muT','muD','varT','varD'})), ...
+                'OUT3 must contain muT/muD/varT/varD for reliability weighting.');
+            dSite = double(OUT3.muT(:) - OUT3.muD(:));
+            varSite = 0.5 * (double(OUT3.varT(:)) + double(OUT3.varD(:)));
+            varSite(~isfinite(varSite) | varSite < 0) = 0;
+            den = sqrt(varSite + max(P.groupWeightLambda, 0));
+            den(~isfinite(den) | den <= 0) = NaN;
+            siteWeightsByIndexAll = abs(dSite) ./ den;
+        case 'dprime'
+            assert(isfield(OUT3, 'dprime'), ...
+                'OUT3 must contain dprime for dprime weighting.');
+            siteWeightsByIndexAll = abs(double(OUT3.dprime(:)));
+    end
 
-    if P.groupWeightUseNmatch
+    applyNmatchWeight = P.groupWeightUseNmatch;
+    if siteWeightMode == "dprime"
+        applyNmatchWeight = false;
+    end
+    if applyNmatchWeight
         assert(all(isfield(OUT3, {'wY','wP'})), ...
             'OUT3 must contain wY/wP when P.groupWeightUseNmatch=true.');
         nMatch = double(OUT3.wY(:) + OUT3.wP(:));
@@ -180,7 +261,7 @@ if P.knnUseSiteWeights || P.groupUseSiteWeights
     end
 
     siteWeightsByIndexAll(~isfinite(siteWeightsByIndexAll) | siteWeightsByIndexAll < 0) = 0;
-    siteWeightsByIndexAll(~sigSiteByIndexAll) = 0;
+    siteWeightsByIndexAll(~selectedSiteByIndexAll) = 0;
 
     wPos = siteWeightsByIndexAll(siteWeightsByIndexAll > 0);
     if ~isempty(wPos) && isfinite(P.groupWeightClipPct) && P.groupWeightClipPct > 0 && P.groupWeightClipPct < 100
@@ -199,8 +280,8 @@ if P.knnUseSiteWeights || P.groupUseSiteWeights
         warning('Site weighting requested but no positive site weights were obtained. Falling back to unweighted averaging.');
         siteWeightsByIndexAll = [];
     else
-        fprintf(['Fixed site weights ready: nPos=%d | min/median/max=%.6g / %.6g / %.6g | clip p%.2f\n'], ...
-            numel(wPos), min(wPos), median(wPos), max(wPos), P.groupWeightClipPct);
+        fprintf(['Fixed site weights (%s) ready: nPos=%d | min/median/max=%.6g / %.6g / %.6g | clip p%.2f\n'], ...
+            char(siteWeightMode), numel(wPos), min(wPos), median(wPos), max(wPos), P.groupWeightClipPct);
     end
 end
 
@@ -232,10 +313,10 @@ end
 
 %% Load high-resolution response windows
 if RUN_QC || RUN_POST_AFFINE_VALUES || RUN_STILLS || RUN_MOVIE || RUN_GROUP_POLYGON_PREP || RUN_GROUP_POLYGON_STILLS || RUN_GROUP_POLYGON_MOVIE
-    if ~exist('R_resp', 'var') || ~isstruct(R_resp)
-        S = load(fullfile(cfg.matDir, P.respCapsulesFile));  % loads R
-        R_resp = S.R;
-    end
+    S = load(fullfile(cfg.matDir, P.respCapsulesFile));  % loads R
+    assert(isfield(S, 'R') && isstruct(S.R), ...
+        '%s must contain struct R.', P.respCapsulesFile);
+    R_resp = S.R;
 
     assert(isfield(R_resp, 'timeWindows') && size(R_resp.timeWindows,2) == 2, ...
         '%s must contain R.timeWindows as [nWindows x 2].', P.respCapsulesFile);
@@ -310,22 +391,23 @@ if RUN_QC
 end
 
 %% Optional export of post-affine signed T-D values for all bins
-outValuesFile = fullfile(cfg.resultsDir, sprintf('post_affine_delta_points_allbins_stim%d%s.mat', P.stimIDExample, tagSuffix));
+outValuesFile = fullfile(cfg.resultsDir, sprintf('post_affine_delta_points_allbins_stim%d%s%s.mat', ...
+    P.stimIDExample, tagSuffix, selectionTagSuffix));
 groupedFile = fullfile(cfg.resultsDir, sprintf('grouped_alonggc_polygons_stim%d_N%d%s.mat', ...
-    P.stimIDExample, P.groupN, tagSuffix));
+    P.stimIDExample, P.groupN, [tagSuffix selectionTagSuffix]));
 if RUN_POST_AFFINE_VALUES
     siteRangeVals = P.siteRange(:)';
-    sigMaskVals = isfinite(OUT3.pValueTD(siteRangeVals)) & (OUT3.pValueTD(siteRangeVals) < P.pThresh);
+    selectedMaskVals = selectedSiteByIndexAll(siteRangeVals);
 
     OUT_postAffine = compute_projected_delta_points_allbins( ...
         P.stimIDExample, Tall_V1, ALLCOORDS, RTAB384, R_resp, SNRnorm, ...
         'siteRange', P.siteRange, ...
         'excludeOverlap', true, ...
         'stimIdx', 1:384, ...
-        'sigSiteMask', sigMaskVals, ...
+        'sigSiteMask', selectedMaskVals, ...
         'saveFile', outValuesFile, ...
         'verbose', true);
-    fprintf('Post-affine values saved (significant sites only): %s\n', outValuesFile);
+    fprintf('Post-affine values saved (%s): %s\n', selectedSiteLabel, outValuesFile);
 end
 
 %% Optional pre-movie anchor/KNN diagnostics on post-affine values
@@ -343,10 +425,12 @@ if RUN_PREP_ANCHOR_KNN
         end
     end
 
-    prepFile = fullfile(cfg.resultsDir, sprintf('anchor_knn_prep_stim%d%s.mat', P.stimIDExample, tagSuffix));
+    prepFile = fullfile(cfg.resultsDir, sprintf('anchor_knn_prep_stim%d%s%s.mat', ...
+        P.stimIDExample, tagSuffix, selectionTagSuffix));
     PREP = analyze_anchor_knn_timeseries( ...
         OUT_postAffine, Tall_V1, OUT3, P.stimIDExample, ...
         'siteRange', P.siteRange, ...
+        'siteMask', selectedSiteByIndexAll, ...
         'pThresh', P.pThresh, ...
         'K', P.prepK, ...
         'nPick', P.prepNPick, ...
@@ -371,7 +455,8 @@ if RUN_PREP_NOISE_SIGNAL
         end
     end
 
-    prepNoiseFile = fullfile(cfg.resultsDir, sprintf('knn_noise_signal_prep_stim%d%s.mat', P.stimIDExample, tagSuffix));
+    prepNoiseFile = fullfile(cfg.resultsDir, sprintf('knn_noise_signal_prep_stim%d%s%s.mat', ...
+        P.stimIDExample, tagSuffix, selectionTagSuffix));
     siteWeightsKNN = [];
     if P.knnUseSiteWeights
         siteWeightsKNN = siteWeightsByIndexAll;
@@ -393,7 +478,7 @@ if RUN_PREP_NOISE_SIGNAL
     fprintf('Saved pre-movie noise/signal calibration to: %s\n', prepNoiseFile);
 end
 
-%% Optional grouped along_GC polygon prep (equal-count groups over significant combos)
+%% Optional grouped along_GC polygon prep (equal-count groups over selected combos)
 if RUN_GROUP_POLYGON_PREP
     if ~exist('OUT_postAffine', 'var')
         assert(exist(outValuesFile, 'file') == 2, ...
@@ -408,7 +493,7 @@ if RUN_GROUP_POLYGON_PREP
         end
     end
 
-    sigSiteByIndex = sigSiteByIndexAll;
+    sigSiteByIndex = selectedSiteByIndexAll;
     siteWeightsByIndex = [];
     if P.groupUseSiteWeights
         siteWeightsByIndex = siteWeightsByIndexAll;
@@ -455,7 +540,8 @@ if RUN_STILLS
         ['OUT_postAffine.bins.stream missing. Re-run RUN_POST_AFFINE_VALUES with the ' ...
          'updated compute_projected_delta_points_allbins.m']);
 
-    prepNoiseFile = fullfile(cfg.resultsDir, sprintf('knn_noise_signal_prep_stim%d%s.mat', P.stimIDExample, tagSuffix));
+    prepNoiseFile = fullfile(cfg.resultsDir, sprintf('knn_noise_signal_prep_stim%d%s%s.mat', ...
+        P.stimIDExample, tagSuffix, selectionTagSuffix));
     assert(exist(prepNoiseFile, 'file') == 2, ...
         'Noise/signal prep file missing: %s. Run RUN_PREP_NOISE_SIGNAL first.', prepNoiseFile);
     Sns = load(prepNoiseFile);
@@ -684,7 +770,8 @@ if RUN_GROUP_POLYGON_MOVIE
     end
 
     outMovieGrouped = fullfile(cfg.resultsDir, ...
-        sprintf('V1_attentiondiff_groupedpolygons_N%d%s.mp4', P.groupN, tagSuffix));
+        sprintf('V1_attentiondiff_groupedpolygons_N%d%s%s.mp4', ...
+        P.groupN, tagSuffix, selectionTagSuffix));
 
     MOV_GROUP = make_grouped_alonggc_polygon_movie( ...
         outMovieGrouped, P.stimIDExample, ALLCOORDS, RTAB384, GGROUP, ...
@@ -769,7 +856,10 @@ if RUN_GROUP_POLYGON_SIGMOID_FIT
     if ~isempty(FITS.fig)
         set(FITS.fig, 'Name', sprintf('Grouped sigmoid fits N=%d', P.groupN), 'NumberTitle', 'off');
     end
-    disp(FITS.summary(:, {'groupIdx','A','t50','tauShared','rmse','nFitPoints','status'}));
+    if isfield(FITS, 'figRegression') && ~isempty(FITS.figRegression)
+        set(FITS.figRegression, 'Name', sprintf('Grouped t50 regression N=%d', P.groupN), 'NumberTitle', 'off');
+    end
+    disp(FITS.summary(:, {'groupIdx','A','t50','t50SE','tauShared','rmse','nFitPoints','status'}));
 end
 
 %% exGauss_mod fits for grouped traces
@@ -822,7 +912,8 @@ if RUN_MOVIE
         ['OUT_postAffine.bins.stream missing. Re-run RUN_POST_AFFINE_VALUES with the ' ...
          'updated compute_projected_delta_points_allbins.m']);
 
-    prepNoiseFile = fullfile(cfg.resultsDir, sprintf('knn_noise_signal_prep_stim%d%s.mat', P.stimIDExample, tagSuffix));
+    prepNoiseFile = fullfile(cfg.resultsDir, sprintf('knn_noise_signal_prep_stim%d%s%s.mat', ...
+        P.stimIDExample, tagSuffix, selectionTagSuffix));
     assert(exist(prepNoiseFile, 'file') == 2, ...
         'Noise/signal prep file missing: %s. Run RUN_PREP_NOISE_SIGNAL first.', prepNoiseFile);
     Sns = load(prepNoiseFile);
@@ -846,7 +937,8 @@ if RUN_MOVIE
         siteWeightsKNN = siteWeightsByIndexAll;
     end
 
-    outMovie = fullfile(cfg.resultsDir, sprintf('V1_attentiondiff_movie_postaffine_K%d%s.mp4', Kuse, tagSuffix));
+    outMovie = fullfile(cfg.resultsDir, sprintf('V1_attentiondiff_movie_postaffine_K%d%s%s.mp4', ...
+        Kuse, tagSuffix, selectionTagSuffix));
     MOV = make_post_affine_attention_movie( ...
         outMovie, P.stimIDExample, ALLCOORDS, RTAB384, OUT_postAffine, ...
         'K', Kuse, ...

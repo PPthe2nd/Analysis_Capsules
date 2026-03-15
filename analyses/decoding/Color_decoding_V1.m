@@ -4,6 +4,8 @@
 %   score = weighted mean over sites of (preferredColorResponse - nonpreferredColorResponse)
 % Sites on gray are ignored (missing dimensions).
 % Weights w(site) = abs(dprime(site)) from ColorTune.(refWin).dprime.
+% The final population trace is normalized by the smoothed peak of the
+% weighted visual response trace across all object-in-RF conditions.
 
 % =========================
 % REQUIRED INPUTS
@@ -21,39 +23,78 @@
 % =========================
 refWin = "early";      % "early" or "late" -> which ColorTune.* fields define preference + dprime weights
 capWeightPct = 95;     % cap |d'| weights at this percentile to avoid a few huge weights dominating
+visualPeakWindowMs = [40 250]; % search for the visual-response peak only in this post-stimulus window
+visualPeakSmoothMs = 30;       % running-mean width for the visual-response trace before peak finding
 useSNRsdSpontIfPresent = true;  % if SNR.sdSpont exists, use it
 computeSpontSDIfMissing = true; % if no SNR.sdSpont, compute from R pre-0 bins
-normalizeBySpontSD = true;      % normalize per-site contributions by spont SD
+normalizeBySpontSD = false;     % optional legacy normalization: divide both decoder and visual-reference traces by spont SD
 
 COL_Y = "yellowArm";
 COL_P = "purple";
 COL_G = "gray";
 
+cfg = config();
+tallPath = fullfile(cfg.matDir, 'Tall_V1_lines_N.mat');
+colorTunePath = fullfile(cfg.matDir, 'ColorTune_balanced_V1.mat');
+respPath = fullfile(cfg.matDir, 'Resp_capsules_N_d12.mat');
+snrNormPath = fullfile(cfg.matDir, 'SNR_V1_byColor_byWindow.mat');
+
+assert(exist(tallPath, 'file') == 2, ...
+    'Missing %s. Run the V1 line-stimulus geometry setup first.', tallPath);
+assert(exist(colorTunePath, 'file') == 2, ...
+    'Missing %s. Run the V1 color-tuning analysis first.', colorTunePath);
+assert(exist(respPath, 'file') == 2, ...
+    'Missing %s. Create the high-resolution V1 response summary first.', respPath);
+
+Sgeo = load(tallPath);
+assert(isfield(Sgeo, 'Tall_V1') && isstruct(Sgeo.Tall_V1), ...
+    '%s must contain struct Tall_V1.', tallPath);
+TallDec = Sgeo.Tall_V1;
+
+Sct = load(colorTunePath);
+assert(isfield(Sct, 'ColorTune') && isstruct(Sct.ColorTune), ...
+    '%s must contain struct ColorTune.', colorTunePath);
+ColorTuneDec = Sct.ColorTune;
+
+Sresp = load(respPath);
+assert(isfield(Sresp, 'R') && isstruct(Sresp.R) && isfield(Sresp.R, 'meanAct') ...
+        && size(Sresp.R.meanAct, 1) >= 512, ...
+    '%s must contain a response struct R with at least 512 rows.', respPath);
+Rdec = Sresp.R;
+
+SNRnorm = struct();
+if normalizeBySpontSD && useSNRsdSpontIfPresent && exist(snrNormPath, 'file') == 2
+    Ssnr = load(snrNormPath);
+    if isfield(Ssnr, 'SNR') && isstruct(Ssnr.SNR)
+        SNRnorm = Ssnr.SNR;
+    end
+end
+
 % =========================
 % BASIC DIMS
 % =========================
-nStim = numel(R.nTrials);
+nStim = numel(Rdec.nTrials);
 assert(nStim == 384, 'Expected 384 stimuli.');
-nTrials = double(R.nTrials(:));
+nTrials = double(Rdec.nTrials(:));
 
-[nCh, nStim2, nBins] = size(R.meanAct);
+[nCh, nStim2, nBins] = size(Rdec.meanAct);
 assert(nStim2 == nStim, 'R.meanAct stimulus dim mismatch.');
-assert(all(size(R.meanSqAct) == size(R.meanAct)), 'R.meanSqAct must match R.meanAct size.');
-assert(size(R.timeWindows,1) == nBins, 'R.timeWindows rows must equal #bins.');
+assert(all(size(Rdec.meanSqAct) == size(Rdec.meanAct)), 'R.meanSqAct must match R.meanAct size.');
+assert(size(Rdec.timeWindows,1) == nBins, 'R.timeWindows rows must equal #bins.');
 
 v1Sites = 1:512;      % mapping: site i -> channel i in R
-tCenters = mean(R.timeWindows, 2);  % nBins x 1
+tCenters = mean(Rdec.timeWindows, 2);  % nBins x 1
 
 % =========================
 % Choose preference + weights from ColorTune
 % =========================
 switch lower(refWin)
     case "early"
-        ci = ColorTune.early.colorIndex(:);   % 512x1
-        dp = ColorTune.early.dprime(:);       % 512x1
+        ci = ColorTuneDec.early.colorIndex(:);   % 512x1
+        dp = ColorTuneDec.early.dprime(:);       % 512x1
     case "late"
-        ci = ColorTune.late.colorIndex(:);
-        dp = ColorTune.late.dprime(:);
+        ci = ColorTuneDec.late.colorIndex(:);
+        dp = ColorTuneDec.late.dprime(:);
     otherwise
         error('refWin must be "early" or "late".');
 end
@@ -70,23 +111,28 @@ w(~isfinite(w)) = 0;
 wPos = w(w>0);
 if ~isempty(wPos)
     wCap = prctile(wPos, capWeightPct);
+    w95 = prctile(wPos, 95);
     w = min(w, wCap);
+else
+    wCap = NaN;
+    w95 = NaN;
 end
 
 fprintf('Weight summary |d''|: median=%.3f, 95%%=%.3f, max(after cap)=%.3f\n', ...
-    median(w(w>0),'omitnan'), prctile(w(w>0),95), max(w));
+    median(w(w>0),'omitnan'), w95, max(w));
 
 % If a site has 0 weight, it contributes nothing (no need to threshold by CI)
 useSites = find(w > 0);
 fprintf('Using %d sites with nonzero weight\n', numel(useSites));
+useWeights = w(useSites);
 
 % =========================
 % Sort Tall_V1 by stimNum and extract center_color per site x stim
 % =========================
-TallStimNums = arrayfun(@(x) x.stimNum, Tall_V1(:));
+TallStimNums = arrayfun(@(x) x.stimNum, TallDec(:));
 [sortedStimNums, order] = sort(TallStimNums(:));
 assert(all(sortedStimNums(:).' == 1:nStim), 'Tall_V1.stimNum should cover 1..384.');
-TallSorted = Tall_V1(order);
+TallSorted = TallDec(order);
 
 T0 = TallSorted(1).T;
 assert(istable(T0), 'Tall_V1(stim).T must be a table.');
@@ -123,14 +169,14 @@ fprintf('Using %d complementary pairs\n', nPairs);
 sdSpont = ones(512,1);
 
 if normalizeBySpontSD
-    if useSNRsdSpontIfPresent && exist('SNR','var') && isfield(SNR,'sdSpont') && numel(SNR.sdSpont) >= 512
-        sdSpont = SNR.sdSpont(1:512);
+    if useSNRsdSpontIfPresent && isfield(SNRnorm,'sdSpont') && numel(SNRnorm.sdSpont) >= 512
+        sdSpont = SNRnorm.sdSpont(1:512);
         sdSpont(~isfinite(sdSpont) | sdSpont<=0) = 1;
-        fprintf('Using sdSpont from SNR.sdSpont\n');
+        fprintf('Using sdSpont from SNR_V1_byColor_byWindow.mat\n');
 
     elseif computeSpontSDIfMissing
         % Compute from pre-0 bins in the 10 ms representation
-        isSpontBin = (R.timeWindows(:,2) <= 0);
+        isSpontBin = (Rdec.timeWindows(:,2) <= 0);
         assert(any(isSpontBin), 'No spontaneous bins found (timeWindows end<=0).');
 
         bIdx = find(isSpontBin);
@@ -148,8 +194,8 @@ if normalizeBySpontSD
             for ib = 1:numel(bIdx)
                 tb = bIdx(ib);
 
-                m  = squeeze(R.meanAct(ch,:,tb)).';    % 384x1
-                m2 = squeeze(R.meanSqAct(ch,:,tb)).';
+                m  = squeeze(Rdec.meanAct(ch,:,tb)).';    % 384x1
+                m2 = squeeze(Rdec.meanSqAct(ch,:,tb)).';
 
                 good = isfinite(m) & isfinite(m2) & (nTrials>0);
                 if ~any(good), continue; end
@@ -184,8 +230,8 @@ for ip = 1:nPairs
     b = pairsB(ip);
 
     % Pull responses for all V1 channels for these stimuli
-    Ra = squeeze(R.meanAct(v1Sites, a, :)); % 512 x nBins
-    Rb = squeeze(R.meanAct(v1Sites, b, :)); % 512 x nBins
+    Ra = squeeze(Rdec.meanAct(v1Sites, a, :)); % 512 x nBins
+    Rb = squeeze(Rdec.meanAct(v1Sites, b, :)); % 512 x nBins
 
     sumScore = zeros(1, nBins);
     sumW     = zeros(1, nBins);
@@ -223,8 +269,10 @@ for ip = 1:nPairs
             d = (rP - rY);
         end
 
-        % Normalize by spont SD (optional)
-        d = d ./ sdSpont(site);
+        % Normalize by spont SD (optional legacy mode)
+        if normalizeBySpontSD
+            d = d ./ sdSpont(site);
+        end
 
         sumScore = sumScore + wi * d;
         sumW     = sumW + wi;
@@ -243,10 +291,87 @@ end
 fprintf('Median #sites contributing per pair: %.1f\n', median(nUsedSitesPerPair, 'omitnan'));
 
 % =========================
+% Weighted visual-response normalization
+% =========================
+isObject = (CC == COL_Y) | (CC == COL_P);
+preMask = (Rdec.timeWindows(:,2) <= 0);
+assert(any(preMask), 'No pre-stimulus bins available for baseline subtraction.');
+
+objectTraceSite = nan(numel(useSites), nBins);
+for ii = 1:numel(useSites)
+    site = useSites(ii);
+    idxObj = isObject(site, :) & isfinite(nTrials.');
+    if ~any(idxObj)
+        continue;
+    end
+
+    nObjTrials = nTrials(idxObj);
+    nObjTotal = sum(nObjTrials);
+    if ~(isfinite(nObjTotal) && nObjTotal > 0)
+        continue;
+    end
+
+    for tb = 1:nBins
+        rObj = squeeze(Rdec.meanAct(site, idxObj, tb));
+        rObj = rObj(:);
+        good = isfinite(rObj) & isfinite(nObjTrials) & (nObjTrials > 0);
+        if ~any(good)
+            continue;
+        end
+
+        objectTraceSite(ii, tb) = sum(nObjTrials(good) .* rObj(good)) / sum(nObjTrials(good));
+    end
+end
+
+objectBase = mean(objectTraceSite(:, preMask), 2, 'omitnan');
+objectTraceSiteBS = bsxfun(@minus, objectTraceSite, objectBase);
+if normalizeBySpontSD
+    objectTraceSiteBS = bsxfun(@rdivide, objectTraceSiteBS, sdSpont(useSites));
+end
+
+W = repmat(useWeights, 1, nBins);
+goodObj = isfinite(objectTraceSiteBS) & isfinite(W) & (W > 0);
+Xobj = objectTraceSiteBS;
+Xobj(~goodObj) = 0;
+W(~goodObj) = 0;
+denObj = sum(W, 1);
+visualTrace = sum(Xobj .* W, 1) ./ denObj;
+visualTrace(denObj <= 0) = NaN;
+
+dtMs = median(diff(tCenters));
+assert(isfinite(dtMs) && dtMs > 0, 'Could not infer a positive time step from the response windows.');
+smoothBins = max(1, round(visualPeakSmoothMs / dtMs));
+kernel = ones(smoothBins,1) / smoothBins;
+validVis = isfinite(visualTrace(:));
+vis0 = visualTrace(:);
+vis0(~validVis) = 0;
+numVis = conv(vis0, kernel, 'same');
+denVis = conv(double(validVis), kernel, 'same');
+visualTraceSmooth = numVis ./ denVis;
+visualTraceSmooth(denVis <= 0) = NaN;
+visualTraceSmooth = visualTraceSmooth.';
+
+peakMask = (tCenters >= visualPeakWindowMs(1)) & (tCenters <= visualPeakWindowMs(2));
+assert(any(peakMask), 'No decoder bins fall inside the requested visual peak window.');
+peakVals = visualTraceSmooth(peakMask);
+peakVals = peakVals(isfinite(peakVals));
+assert(~isempty(peakVals), 'Visual peak window does not contain any finite values.');
+visualPeak = max(peakVals);
+assert(isfinite(visualPeak) && (visualPeak > 0), ...
+    'Weighted visual peak must be positive for normalization.');
+
+fprintf(['Using weighted visual peak %.4f for normalization ' ...
+         '(smooth=%d ms, window=[%.0f %.0f] ms)\n'], ...
+    visualPeak, visualPeakSmoothMs, visualPeakWindowMs(1), visualPeakWindowMs(2));
+
+% =========================
 % Average across pairs
 % =========================
-mScore = mean(scorePerPair, 1, 'omitnan');
-semScore = std(scorePerPair, 0, 1, 'omitnan') ./ sqrt(sum(isfinite(scorePerPair),1));
+mScoreRaw = mean(scorePerPair, 1, 'omitnan');
+semScoreRaw = std(scorePerPair, 0, 1, 'omitnan') ./ sqrt(sum(isfinite(scorePerPair),1));
+mScore = mScoreRaw / visualPeak;
+semScore = semScoreRaw / visualPeak;
+scorePerPairNorm = scorePerPair / visualPeak;
 
 figure; hold on;
 plot(tCenters, mScore, 'LineWidth', 2);
@@ -254,16 +379,16 @@ fill([tCenters; flipud(tCenters)], [(mScore-semScore)'; flipud((mScore+semScore)
      'k', 'FaceAlpha', 0.12, 'EdgeColor', 'none');
 xline(0,'k-');
 xlabel('Time from stimulus onset (ms)');
-ylabel('Weighted signed score (pref - nonpref), a.u.');
-title(sprintf('Weighted pair-wise color decoding (%s weights |d''|), Npairs=%d', refWin, nPairs));
+ylabel('Weighted pref - nonpref / peak visual response');
+title(sprintf(['Weighted pair-wise color decoding ' ...
+    '(%s weights |d''|, Npairs=%d, Nsites=%d, visual peak = 1)'], ...
+    refWin, nPairs, numel(useSites)));
 grid on;
 
 % Optional: quick pre/post sanity
 tbPre  = find(tCenters < 0, 1, 'last');
 tbPost = find(tCenters >= 100, 1, 'first');
 if ~isempty(tbPre) && ~isempty(tbPost)
-    fprintf('Mean score pre (%.0f ms): %.4f\n', tCenters(tbPre), mean(scorePerPair(:,tbPre),'omitnan'));
-    fprintf('Mean score post (%.0f ms): %.4f\n', tCenters(tbPost), mean(scorePerPair(:,tbPost),'omitnan'));
+    fprintf('Mean normalized score pre (%.0f ms): %.4f\n', tCenters(tbPre), mean(scorePerPairNorm(:,tbPre),'omitnan'));
+    fprintf('Mean normalized score post (%.0f ms): %.4f\n', tCenters(tbPost), mean(scorePerPairNorm(:,tbPost),'omitnan'));
 end
-
-

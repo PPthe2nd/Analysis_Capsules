@@ -10,6 +10,8 @@ function R = analyze_anchor_knn_timeseries(D, Tall_V1, OUT3, stimID_example, var
 %
 % Name/value options:
 %   'siteRange'   (default 1:512)
+%   'siteMask'    (default []) logical mask over absolute site index; if
+%                 provided, this overrides pThresh-based selection
 %   'pThresh'     (default 0.05)
 %   'K'           (default 30)
 %   'nPick'       (default 5)
@@ -23,6 +25,7 @@ function R = analyze_anchor_knn_timeseries(D, Tall_V1, OUT3, stimID_example, var
 
 p = inputParser;
 p.addParameter('siteRange', 1:512, @(x) isnumeric(x) && isvector(x));
+p.addParameter('siteMask', [], @(x) isempty(x) || (islogical(x) && isvector(x)));
 p.addParameter('pThresh', 0.05, @(x) isnumeric(x) && isscalar(x));
 p.addParameter('K', 30, @(x) isnumeric(x) && isscalar(x) && x >= 1);
 p.addParameter('nPick', 5, @(x) isnumeric(x) && isscalar(x) && x >= 2);
@@ -45,9 +48,18 @@ if ~isfield(OUT3, 'pValueTD') || numel(OUT3.pValueTD) < max(siteRange)
     error('OUT3.pValueTD is missing or smaller than siteRange.');
 end
 
-sigMaskGlobal = false(max(siteRange),1);
-sigMaskGlobal(siteRange) = isfinite(OUT3.pValueTD(siteRange)) & ...
-    (OUT3.pValueTD(siteRange) < opt.pThresh);
+if isempty(opt.siteMask)
+    sigMaskGlobal = false(max(siteRange),1);
+    sigMaskGlobal(siteRange) = isfinite(OUT3.pValueTD(siteRange)) & ...
+        (OUT3.pValueTD(siteRange) < opt.pThresh);
+else
+    sigMaskIn = opt.siteMask(:);
+    if numel(sigMaskIn) < max(siteRange)
+        error('siteMask has only %d elements; need at least %d.', numel(sigMaskIn), max(siteRange));
+    end
+    sigMaskGlobal = false(numel(sigMaskIn),1);
+    sigMaskGlobal(1:numel(sigMaskIn)) = sigMaskIn;
+end
 
 % 1) Build set of fully valid (site, quartet, stimSource) in each bin, then intersect.
 pairSets = cell(nBins,1);
@@ -72,7 +84,7 @@ if isempty(Pall)
     error('No anchor combinations are present in all bins (finite x,y,delta).');
 end
 
-% Keep only significant sites.
+% Keep only requested sites.
 keepSig = false(size(Pall,1),1);
 for i = 1:size(Pall,1)
     s = Pall(i,1);
@@ -82,7 +94,7 @@ for i = 1:size(Pall,1)
 end
 Pall = Pall(keepSig,:);
 if isempty(Pall)
-    error('No all-bin anchor combinations remain after significance filtering.');
+    error('No all-bin anchor combinations remain after site filtering.');
 end
 
 % 2) Attach along_GC from source stimulus and select spaced anchors.
@@ -105,7 +117,7 @@ okAlong = isfinite(along);
 Pall = Pall(okAlong,:);
 along = along(okAlong);
 if numel(along) < opt.nPick
-    error('Only %d valid significant anchors with finite along_GC; need %d.', ...
+    error('Only %d valid anchors with finite along_GC; need %d.', ...
         numel(along), opt.nPick);
 end
 
@@ -135,7 +147,7 @@ AnchorTable = table(A(:,1), A(:,3), A(:,2), aSel, ...
 AnchorTable = sortrows(AnchorTable, 'along_GC');
 
 if opt.verbose
-    fprintf('Selected valid significant anchors (N=%d):\n', height(AnchorTable));
+    fprintf('Selected valid anchors (N=%d):\n', height(AnchorTable));
     disp(AnchorTable);
 end
 
