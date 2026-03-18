@@ -406,7 +406,12 @@ if mode == "overlay"
                 case "groupidx"
                     xlabel(axReg, 'Group index');
                 otherwise
-                    xlabel(axReg, 'Number of growth cones (along\_GC midpoint)');
+                    if isfield(G, 'meta') && isfield(G.meta, 'groupingVar') && ...
+                            strcmpi(string(G.meta.groupingVar), "rfEccentricity")
+                        xlabel(axReg, 'RF eccentricity midpoint');
+                    else
+                        xlabel(axReg, 'Number of growth cones (along\_GC midpoint)');
+                    end
             end
             ylabel(axReg, 't50 (ms)');
             if regUseWeighted
@@ -428,6 +433,11 @@ summary = table((1:nGroups)', AhatAll, t50hatAll, repmat(tauHat, nGroups,1), ...
 if isfield(G, 'groupSummary') && istable(G.groupSummary) && height(G.groupSummary) >= nGroups
     summary.alongMin = double(G.groupSummary.alongMin(1:nGroups));
     summary.alongMax = double(G.groupSummary.alongMax(1:nGroups));
+    if ismember('eccMin', G.groupSummary.Properties.VariableNames) && ...
+            ismember('eccMax', G.groupSummary.Properties.VariableNames)
+        summary.eccMin = double(G.groupSummary.eccMin(1:nGroups));
+        summary.eccMax = double(G.groupSummary.eccMax(1:nGroups));
+    end
 end
 
 F = struct();

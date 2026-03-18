@@ -12,14 +12,18 @@ function ColorTune = compute_color_tuning_balanced_sites(DATA, Tall, siteRows, k
 % siteRows    : row indices available in DATA/Tall.
 % keepSiteIdx : indices within siteRows to actually compute.
 %
-% Outputs mirror the V1 ColorTune struct:
+% Outputs mirror the V1 ColorTune struct and add a paired precision-weighted
+% complementary test:
 %   ColorTune.early.* and ColorTune.late.* with fields
-%   muY, muP, varY, varP, NY, NP, colorIndex, dprime, z, p
+%   muY, muP, varY, varP, NY, NP, colorIndex, dprime, z, p,
+%   pairedMuY, pairedMuP, pairedMeanDiff, pairedWeightedDiff,
+%   pairedWeightSum, pairedEffN, pairedT, pairedP, pairedNPairs
 
 p = inputParser;
 p.addParameter('WIN_EARLY', 2, @(x) isnumeric(x) && isscalar(x) && x >= 1);
 p.addParameter('WIN_LATE', 3, @(x) isnumeric(x) && isscalar(x) && x >= 1);
 p.addParameter('useBesselCorrection', true, @(x) islogical(x) && isscalar(x));
+p.addParameter('varFloorFrac', 1e-3, @(x) isnumeric(x) && isscalar(x) && x > 0);
 p.addParameter('Verbose', true, @(x) islogical(x) && isscalar(x));
 p.parse(varargin{:});
 opt = p.Results;
@@ -104,7 +108,9 @@ ColorTune.siteRows = siteRows;
 ColorTune.keepSites = keepRows;
 ColorTune.keepSiteIdx = keepSiteIdx;
 
-fields = ["muY","muP","varY","varP","NY","NP","colorIndex","dprime","z","p"];
+fields = ["muY","muP","varY","varP","NY","NP","colorIndex","dprime","z","p", ...
+    "pairedMuY","pairedMuP","pairedMeanDiff","pairedWeightedDiff", ...
+    "pairedWeightSum","pairedEffN","pairedT","pairedP","pairedNPairs"];
 for f = fields
     ColorTune.early.(f) = nan(nSitesTotal,1);
     ColorTune.late.(f)  = nan(nSitesTotal,1);
@@ -128,6 +134,16 @@ for iSite = keepRows(:).'
     sumP_e = 0; sumP2_e = 0; NP_e = 0;
     sumY_l = 0; sumY2_l = 0; NY_l = 0;
     sumP_l = 0; sumP2_l = 0; NP_l = 0;
+    pairDiffEarly = nan(numel(pairsA), 1);
+    pairVarEarly = nan(numel(pairsA), 1);
+    pairYEarly = nan(numel(pairsA), 1);
+    pairPEarly = nan(numel(pairsA), 1);
+    pairDiffLate = nan(numel(pairsA), 1);
+    pairVarLate = nan(numel(pairsA), 1);
+    pairYLate = nan(numel(pairsA), 1);
+    pairPLate = nan(numel(pairsA), 1);
+    nPairEarly = 0;
+    nPairLate = 0;
 
     for k = 1:numel(pairsA)
         a = pairsA(k);
@@ -187,10 +203,43 @@ for iSite = keepRows(:).'
             sumP2_l = sumP2_l + nEff * msqLate(b);
             NP_l    = NP_l    + nEff;
         end
+
+        if ca == COL_Y && cb == COL_P
+            [dEarly, vEarly, muYEarly, muPEarly] = build_paired_diff(mEarly(a), msqEarly(a), na, ...
+                mEarly(b), msqEarly(b), nb, nEff, opt.useBesselCorrection);
+            [dLate, vLate, muYLate, muPLate] = build_paired_diff(mLate(a), msqLate(a), na, ...
+                mLate(b), msqLate(b), nb, nEff, opt.useBesselCorrection);
+        elseif ca == COL_P && cb == COL_Y
+            [dEarly, vEarly, muYEarly, muPEarly] = build_paired_diff(mEarly(b), msqEarly(b), nb, ...
+                mEarly(a), msqEarly(a), na, nEff, opt.useBesselCorrection);
+            [dLate, vLate, muYLate, muPLate] = build_paired_diff(mLate(b), msqLate(b), nb, ...
+                mLate(a), msqLate(a), na, nEff, opt.useBesselCorrection);
+        else
+            dEarly = NaN; vEarly = NaN; muYEarly = NaN; muPEarly = NaN;
+            dLate = NaN; vLate = NaN; muYLate = NaN; muPLate = NaN;
+        end
+
+        if isfinite(dEarly) && isfinite(vEarly)
+            nPairEarly = nPairEarly + 1;
+            pairDiffEarly(nPairEarly) = dEarly;
+            pairVarEarly(nPairEarly) = vEarly;
+            pairYEarly(nPairEarly) = muYEarly;
+            pairPEarly(nPairEarly) = muPEarly;
+        end
+        if isfinite(dLate) && isfinite(vLate)
+            nPairLate = nPairLate + 1;
+            pairDiffLate(nPairLate) = dLate;
+            pairVarLate(nPairLate) = vLate;
+            pairYLate(nPairLate) = muYLate;
+            pairPLate(nPairLate) = muPLate;
+        end
     end
 
     [muY, varY, muP, varP, NY, NP, cind, dp, z, pVal] = ...
         compute_metrics(sumY_e, sumY2_e, NY_e, sumP_e, sumP2_e, NP_e, opt.useBesselCorrection);
+    [pairMuY, pairMuP, pairMeanDiff, pairWeightedDiff, pairWeightSum, pairEffN, pairT, pairP] = ...
+        compute_paired_stats(pairDiffEarly(1:nPairEarly), pairVarEarly(1:nPairEarly), ...
+        pairYEarly(1:nPairEarly), pairPEarly(1:nPairEarly), opt.varFloorFrac);
     ColorTune.early.muY(iSite) = muY;
     ColorTune.early.varY(iSite) = varY;
     ColorTune.early.muP(iSite) = muP;
@@ -201,9 +250,21 @@ for iSite = keepRows(:).'
     ColorTune.early.dprime(iSite) = dp;
     ColorTune.early.z(iSite) = z;
     ColorTune.early.p(iSite) = pVal;
+    ColorTune.early.pairedMuY(iSite) = pairMuY;
+    ColorTune.early.pairedMuP(iSite) = pairMuP;
+    ColorTune.early.pairedMeanDiff(iSite) = pairMeanDiff;
+    ColorTune.early.pairedWeightedDiff(iSite) = pairWeightedDiff;
+    ColorTune.early.pairedWeightSum(iSite) = pairWeightSum;
+    ColorTune.early.pairedEffN(iSite) = pairEffN;
+    ColorTune.early.pairedT(iSite) = pairT;
+    ColorTune.early.pairedP(iSite) = pairP;
+    ColorTune.early.pairedNPairs(iSite) = nPairEarly;
 
     [muY, varY, muP, varP, NY, NP, cind, dp, z, pVal] = ...
         compute_metrics(sumY_l, sumY2_l, NY_l, sumP_l, sumP2_l, NP_l, opt.useBesselCorrection);
+    [pairMuY, pairMuP, pairMeanDiff, pairWeightedDiff, pairWeightSum, pairEffN, pairT, pairP] = ...
+        compute_paired_stats(pairDiffLate(1:nPairLate), pairVarLate(1:nPairLate), ...
+        pairYLate(1:nPairLate), pairPLate(1:nPairLate), opt.varFloorFrac);
     ColorTune.late.muY(iSite) = muY;
     ColorTune.late.varY(iSite) = varY;
     ColorTune.late.muP(iSite) = muP;
@@ -214,11 +275,109 @@ for iSite = keepRows(:).'
     ColorTune.late.dprime(iSite) = dp;
     ColorTune.late.z(iSite) = z;
     ColorTune.late.p(iSite) = pVal;
+    ColorTune.late.pairedMuY(iSite) = pairMuY;
+    ColorTune.late.pairedMuP(iSite) = pairMuP;
+    ColorTune.late.pairedMeanDiff(iSite) = pairMeanDiff;
+    ColorTune.late.pairedWeightedDiff(iSite) = pairWeightedDiff;
+    ColorTune.late.pairedWeightSum(iSite) = pairWeightSum;
+    ColorTune.late.pairedEffN(iSite) = pairEffN;
+    ColorTune.late.pairedT(iSite) = pairT;
+    ColorTune.late.pairedP(iSite) = pairP;
+    ColorTune.late.pairedNPairs(iSite) = nPairLate;
 end
 
 if opt.Verbose
     fprintf('Done. Example: median d'' early (kept) = %.3f\n', ...
         median(ColorTune.early.dprime(keepRows), 'omitnan'));
+end
+
+function [pairDiff, pairVar, muY, muP] = build_paired_diff(muY, msqY, nOrigY, muP, msqP, nOrigP, nEff, useBessel)
+pairDiff = NaN;
+pairVar = NaN;
+if ~(isfinite(muY) && isfinite(msqY) && isfinite(nOrigY) && nOrigY > 1 && ...
+        isfinite(muP) && isfinite(msqP) && isfinite(nOrigP) && nOrigP > 1 && ...
+        isfinite(nEff) && nEff > 0)
+    return;
+end
+
+varMeanY = variance_of_balanced_mean(muY, msqY, nOrigY, nEff, useBessel);
+varMeanP = variance_of_balanced_mean(muP, msqP, nOrigP, nEff, useBessel);
+if ~(isfinite(varMeanY) && isfinite(varMeanP))
+    return;
+end
+
+pairDiff = muY - muP;
+pairVar = varMeanY + varMeanP;
+end
+
+function varMean = variance_of_balanced_mean(mu, msq, nOrig, nEff, useBessel)
+varMean = NaN;
+if ~(isfinite(mu) && isfinite(msq) && isfinite(nOrig) && nOrig > 1 && isfinite(nEff) && nEff > 0)
+    return;
+end
+sampleVar = max(0, msq - mu^2);
+if useBessel
+    sampleVar = sampleVar * (nOrig / (nOrig - 1));
+end
+varMean = sampleVar / nEff;
+end
+
+function [muYw, muPw, meanDiff, weightedDiff, sumW, effN, tStat, pVal] = ...
+        compute_paired_stats(pairDiff, pairVar, pairY, pairP, varFloorFrac)
+muYw = NaN; muPw = NaN; meanDiff = NaN; weightedDiff = NaN;
+sumW = NaN; effN = NaN; tStat = NaN; pVal = NaN;
+
+valid = isfinite(pairDiff) & isfinite(pairVar) & (pairVar >= 0) & isfinite(pairY) & isfinite(pairP);
+pairDiff = pairDiff(valid);
+pairVar = pairVar(valid);
+pairY = pairY(valid);
+pairP = pairP(valid);
+if numel(pairDiff) < 2
+    return;
+end
+
+posVar = pairVar(pairVar > 0);
+if isempty(posVar)
+    varFloor = 1e-6;
+else
+    varFloor = max(median(posVar) * varFloorFrac, 1e-6);
+end
+w = 1 ./ max(pairVar, varFloor);
+sumW = sum(w);
+if ~(isfinite(sumW) && sumW > 0)
+    return;
+end
+meanDiff = mean(pairDiff);
+weightedDiff = sum(w .* pairDiff) / sumW;
+muYw = sum(w .* pairY) / sumW;
+muPw = sum(w .* pairP) / sumW;
+effN = (sumW^2) / sum(w.^2);
+
+df = numel(pairDiff) - 1;
+resid = pairDiff - weightedDiff;
+rssWeighted = sum(w .* (resid .^ 2));
+if ~(isfinite(rssWeighted) && df > 0)
+    return;
+end
+
+sigma2Hat = rssWeighted / df;
+seWeighted = sqrt(sigma2Hat / sumW);
+if isfinite(seWeighted) && seWeighted > 0
+    tStat = weightedDiff / seWeighted;
+    pVal = 1 - fcdf_local(tStat.^2, 1, df);
+elseif weightedDiff ~= 0
+    tStat = sign(weightedDiff) * Inf;
+    pVal = 0;
+else
+    tStat = 0;
+    pVal = 1;
+end
+end
+
+function p = fcdf_local(x, df1, df2)
+z = (df1 .* x) ./ (df1 .* x + df2);
+z = min(max(z, 0), 1);
+p = betainc(z, df1/2, df2/2);
 end
 
 end

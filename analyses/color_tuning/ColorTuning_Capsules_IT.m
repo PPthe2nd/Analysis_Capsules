@@ -1,10 +1,11 @@
-% Color tuning with complementary balancing for V4 sites in the line task.
+% Color tuning with complementary balancing for IT sites in the line task.
 %
-% This mirrors the V1 ColorTuning_Capsules logic, but uses the V4 geometry
-% tables and computes the histogram directly for the V4 onset-driven set.
+% This mirrors the V4 color-tuning workflow, but uses Tall_IT so the
+% yellow/purple label is read at the pre-existing RF center loaded via RFs.m
+% when Tall_IT_lines_*.mat was built.
 
 Monkey = 1; % 1 = Nilson, 2 = Figaro
-SNRthr = 0.7; % minimum onset SNR for inclusion in the color-tuning computation
+SNRthr = 0.7; % minimum onset SNR for inclusion
 alpha = 0.05; % significance threshold for the histogram overlay
 SaveResults = true;
 
@@ -12,36 +13,36 @@ cfg = config();
 
 if Monkey == 1
     monkeySuffix = "N";
-    tallFile = 'Tall_V4_lines_N.mat';
+    tallFile = 'Tall_IT_lines_N.mat';
     resp3binFile = 'SNR_capsules_N_d12.mat';
 elseif Monkey == 2
     monkeySuffix = "F";
-    tallFile = 'Tall_V4_lines_F.mat';
+    tallFile = 'Tall_IT_lines_F.mat';
     resp3binFile = 'SNR_capsules_F_d12.mat';
 else
-    error('ColorTuning_Capsules_V4:InvalidMonkey', ...
+    error('ColorTuning_Capsules_IT:InvalidMonkey', ...
         'Monkey must be 1 (Nilson) or 2 (Figaro).');
 end
 
 tallPath = fullfile(cfg.matDir, tallFile);
 resp3binPath = fullfile(cfg.matDir, resp3binFile);
-outFile = fullfile(cfg.matDir, sprintf('ColorTune_balanced_V4_%s.mat', char(monkeySuffix)));
+outFile = fullfile(cfg.matDir, sprintf('ColorTune_balanced_IT_%s.mat', char(monkeySuffix)));
 
 assert(exist(tallPath, 'file') == 2, ...
-    'Missing %s. Run Line_Stimuli_V4.m first.', tallPath);
+    'Missing %s. Run Line_Stimuli_IT.m first.', tallPath);
 assert(exist(resp3binPath, 'file') == 2, ...
     'Missing %s. Create the 3-bin response summary first.', resp3binPath);
 
 Sgeo = load(tallPath);
-assert(isfield(Sgeo, 'Tall_V4') && isstruct(Sgeo.Tall_V4), ...
-    '%s must contain struct Tall_V4.', tallFile);
+assert(isfield(Sgeo, 'Tall_IT') && isstruct(Sgeo.Tall_IT), ...
+    '%s must contain struct Tall_IT.', tallFile);
 assert(isfield(Sgeo, 'RFrange') && ~isempty(Sgeo.RFrange), ...
     '%s must contain RFrange.', tallFile);
 
-Tall_V4 = Sgeo.Tall_V4;
+Tall_IT = Sgeo.Tall_IT;
 RFrange = Sgeo.RFrange(:);
-nV4 = numel(RFrange);
-siteRows = (1:nV4).';
+nIT = numel(RFrange);
+siteRows = (1:nIT).';
 
 Sresp = load(resp3binPath);
 assert(isfield(Sresp, 'R') && isstruct(Sresp.R), ...
@@ -57,17 +58,17 @@ else
     R3.nTrials = R3_full.nTrials;
 end
 
-SNR = compute_snr_per_color_sites(R3, Tall_V4, siteRows, 'Verbose', true);
+SNR = compute_snr_per_color_sites(R3, Tall_IT, siteRows, 'Verbose', true);
 SNRmat = [SNR.yellowEarly(siteRows), SNR.yellowLate(siteRows), ...
           SNR.purpleEarly(siteRows), SNR.purpleLate(siteRows)];
 [bestSNR, ~] = max(SNRmat, [], 2, 'omitnan');
 
 keepSiteIdx = find(isfinite(bestSNR) & (bestSNR > SNRthr));
-fprintf('Keeping %d / %d V4 sites (bestSNR > %.2f)\n', numel(keepSiteIdx), nV4, SNRthr);
+fprintf('Keeping %d / %d IT sites (bestSNR > %.2f)\n', numel(keepSiteIdx), nIT, SNRthr);
 assert(~isempty(keepSiteIdx), ...
-    'No V4 sites passed the SNR threshold %.2f.', SNRthr);
+    'No IT sites passed the SNR threshold %.2f.', SNRthr);
 
-ColorTune = compute_color_tuning_balanced_sites(R3, Tall_V4, siteRows, keepSiteIdx, 'Verbose', true);
+ColorTune = compute_color_tuning_balanced_sites(R3, Tall_IT, siteRows, keepSiteIdx, 'Verbose', true);
 ColorTune.thr = SNRthr;
 ColorTune.bestSNR = bestSNR;
 ColorTune.RFrange = RFrange;
@@ -87,42 +88,50 @@ ciLate = ciLateAll(keepLate);
 sigLateMask = keepLate & isfinite(pLateAll) & (pLateAll < alpha);
 ciLateSig = ciLateAll(sigLateMask);
 
-fprintf('Significant V4 color tuning by pooled test (p < %.2f): early=%d late=%d\n', ...
+fprintf('Significant IT color tuning at RF center by pooled test (p < %.2f): early=%d late=%d\n', ...
     alpha, nnz(sigEarlyMask), nnz(sigLateMask));
 
-figure('Color', 'w');
+figName = sprintf('RF.m CENTER | IT color tuning (%s)', char(monkeySuffix));
+figTitle = sprintf('RF.m CENTER | IT color tuning (%s), SNR>%.2f', char(monkeySuffix), SNRthr);
+figNum = 101;
+figure(figNum); clf;
+set(gcf, 'Color', 'w', 'Name', figName, 'NumberTitle', 'off', 'Tag', 'IT_RFm_center_color_tuning');
+fprintf('Opened figure %d: %s\n', figNum, figTitle);
 useTiled = exist('tiledlayout', 'file') == 2;
 if useTiled
     tiledlayout(1, 2, 'TileSpacing', 'compact', 'Padding', 'compact');
 end
 
 if useTiled, nexttile; else, subplot(1, 2, 1); end
-hEarly = histogram(ciEarly, 30, 'FaceColor', [0.8 0.8 0.8], 'EdgeColor', 'none');
+hEarly = histogram(ciEarly, 30, 'FaceColor', [0.82 0.82 0.82], 'EdgeColor', 'none');
 hold on;
-histogram(ciEarlySig, 'BinEdges', hEarly.BinEdges, 'FaceColor', [0.8 0 0], 'EdgeColor', 'none');
+histogram(ciEarlySig, 'BinEdges', hEarly.BinEdges, 'FaceColor', [0.80 0.10 0.10], 'EdgeColor', 'none');
 xline(0, 'k-');
-xlabel('Color Index (yellow - purple)');
-ylabel('Number of sites');
+xlabel('Color index (yellow - purple)');
+ylabel('N sites');
 title('Early');
 legend('All sites', sprintf('Significant (p<%.2f)', alpha));
 grid on;
 
 if useTiled, nexttile; else, subplot(1, 2, 2); end
-hLate = histogram(ciLate, 30, 'FaceColor', [0.8 0.8 0.8], 'EdgeColor', 'none');
+hLate = histogram(ciLate, 30, 'FaceColor', [0.82 0.82 0.82], 'EdgeColor', 'none');
 hold on;
-histogram(ciLateSig, 'BinEdges', hLate.BinEdges, 'FaceColor', [0.8 0 0], 'EdgeColor', 'none');
+histogram(ciLateSig, 'BinEdges', hLate.BinEdges, 'FaceColor', [0.80 0.10 0.10], 'EdgeColor', 'none');
 xline(0, 'k-');
-xlabel('Color Index (yellow - purple)');
-ylabel('Number of sites');
+xlabel('Color index (yellow - purple)');
+ylabel('N sites');
 title('Late');
 legend('All sites', sprintf('Significant (p<%.2f)', alpha));
 grid on;
 
 if exist('sgtitle', 'file') == 2
-    sgtitle(sprintf('V4 Color tuning (%s), SNR>%.2f', char(monkeySuffix), SNRthr));
+    sgtitle(figTitle);
+else
+    annotation('textbox', [0.12 0.955 0.76 0.04], 'String', figTitle, ...
+        'EdgeColor', 'none', 'HorizontalAlignment', 'center', 'FontWeight', 'bold');
 end
 
 if SaveResults
     save(outFile, 'ColorTune', '-v7.3');
-    fprintf('Saved V4 color tuning results to %s\n', outFile);
+    fprintf('Saved IT color tuning results to %s\n', outFile);
 end

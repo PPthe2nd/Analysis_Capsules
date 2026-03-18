@@ -71,17 +71,23 @@ if ~any(postMask)
     error('No post bins found with window start >= %.1f ms.', opt.postStartMs);
 end
 
-% Build global combo index (site, quartet)
-pairAll = zeros(0,2);
+% Build global point index (site, quartet, stream) so target and distractor
+% routes are tracked separately, matching the movie renderer.
+pairAll = zeros(0,3);
 for tb = 1:nBins
     s = double(B(tb).siteIdx(:));
     q = double(B(tb).quartetIdx(:));
     d = double(B(tb).delta(:));
     x = double(B(tb).x_px(:));
     y = double(B(tb).y_px(:));
-    ok = isfinite(s) & isfinite(q) & isfinite(d) & isfinite(x) & isfinite(y);
+    if isfield(B(tb), 'stream')
+        str = double(B(tb).stream(:));
+    else
+        str = ones(size(d));
+    end
+    ok = isfinite(s) & isfinite(q) & isfinite(d) & isfinite(x) & isfinite(y) & isfinite(str);
     if any(ok)
-        pairAll = [pairAll; [s(ok), q(ok)]]; %#ok<AGROW>
+        pairAll = [pairAll; [s(ok), q(ok), str(ok)]]; %#ok<AGROW>
     end
 end
 pairAll = unique(pairAll, 'rows');
@@ -200,7 +206,7 @@ for tb = 1:nBins
         end
     end
 
-    thisPairs = [s q];
+    thisPairs = [s q str];
     [tf, loc] = ismember(thisPairs, pairAll, 'rows');
     if any(~tf)
         warning('Some pairs in bin %d were not found in global pairAll; skipping them.', tb);

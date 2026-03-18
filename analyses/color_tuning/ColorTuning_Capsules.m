@@ -42,6 +42,11 @@ COL_P = "purple";
 COL_G = "gray";
 
 useBesselCorrection = true; % variance within stimulus: n/(n-1) correction
+alpha = 0.05;              % significance threshold for paired histogram overlay
+
+cfg = config();
+legacyColorTunePath = fullfile(cfg.matDir, 'ColorTune_balanced_V1.mat');
+loadedLegacyColorTune = false;
 
 nStim = numel(R.nTrials);
 nTrials = double(R.nTrials(:));
@@ -103,126 +108,215 @@ nSites = 512;
 v1RowsInR = (1:512);
 
 % Output arrays (512x1), set NaN for non-kept sites
-ColorTune = struct();
-ColorTune.keepSites = keepSites;
-ColorTune.thr = SNRthr;
-
-% For each window store mu/var/N for Y and P
-fields = ["muY","muP","varY","varP","NY","NP","colorIndex","dprime","z","p"];
-for f = fields
-    ColorTune.early.(f) = nan(nSites,1);
-    ColorTune.late.(f)  = nan(nSites,1);
+if exist(legacyColorTunePath, 'file') == 2
+    Slegacy = load(legacyColorTunePath, 'ColorTune');
+    if isfield(Slegacy, 'ColorTune') && isstruct(Slegacy.ColorTune) && ...
+            isfield(Slegacy.ColorTune, 'early') && isfield(Slegacy.ColorTune, 'late') && ...
+            isfield(Slegacy.ColorTune.early, 'colorIndex') && isfield(Slegacy.ColorTune.late, 'colorIndex')
+        ColorTune = Slegacy.ColorTune;
+        loadedLegacyColorTune = true;
+        fprintf('Loaded historical V1 color tuning from %s\n', legacyColorTunePath);
+    end
 end
 
-% -----------------------
-% Main loop over sites (only compute kept ones)
-% -----------------------
-for iSite = keepSites(:).'
-    s = v1RowsInR(iSite); % row in R
+if ~loadedLegacyColorTune
+    ColorTune = struct();
+    ColorTune.keepSites = keepSites;
+    ColorTune.thr = SNRthr;
 
-    % Pre-fetch responses for speed
-    mEarly  = squeeze(R.meanAct(s,:,WIN_EARLY)).';   % [384 x 1]
-    msqEarly= squeeze(R.meanSqAct(s,:,WIN_EARLY)).'; % [384 x 1]
-    mLate   = squeeze(R.meanAct(s,:,WIN_LATE)).';
-    msqLate = squeeze(R.meanSqAct(s,:,WIN_LATE)).';
-
-    % Accumulators for early
-    sumY_e = 0; sumY2_e = 0; NY_e = 0;
-    sumP_e = 0; sumP2_e = 0; NP_e = 0;
-
-    % Accumulators for late
-    sumY_l = 0; sumY2_l = 0; NY_l = 0;
-    sumP_l = 0; sumP2_l = 0; NP_l = 0;
-
-    for ip = 1:nPairs
-        a = pairsA(ip);
-        b = pairsB(ip);
-
-        na = nTrials(a);
-        nb = nTrials(b);
-        nEff = min(na, nb);
-
-        if nEff <= 0
-            continue;
-        end
-
-        % Exclude background: if RF on gray in BOTH, skip.
-        % (In your design, if it's gray in one it should be gray in complement too.)
-        ca = CC(iSite,a);
-        cb = CC(iSite,b);
-
-        if (ca == COL_G) && (cb == COL_G)
-            continue;
-        end
-
-        % Safety: if either is missing/empty, skip
-        if (ca == "" || ismissing(ca) || cb == "" || ismissing(cb))
-            continue;
-        end
-
-        % Early window: stimulus a contributes to color ca, stimulus b contributes to color cb
-        % Add nEff "balanced" trials from each
-        if ca == COL_Y
-            sumY_e  = sumY_e  + nEff * mEarly(a);
-            sumY2_e = sumY2_e + nEff * msqEarly(a);
-            NY_e    = NY_e    + nEff;
-        elseif ca == COL_P
-            sumP_e  = sumP_e  + nEff * mEarly(a);
-            sumP2_e = sumP2_e + nEff * msqEarly(a);
-            NP_e    = NP_e    + nEff;
-        end
-
-        if cb == COL_Y
-            sumY_e  = sumY_e  + nEff * mEarly(b);
-            sumY2_e = sumY2_e + nEff * msqEarly(b);
-            NY_e    = NY_e    + nEff;
-        elseif cb == COL_P
-            sumP_e  = sumP_e  + nEff * mEarly(b);
-            sumP2_e = sumP2_e + nEff * msqEarly(b);
-            NP_e    = NP_e    + nEff;
-        end
-
-        % Late window
-        if ca == COL_Y
-            sumY_l  = sumY_l  + nEff * mLate(a);
-            sumY2_l = sumY2_l + nEff * msqLate(a);
-            NY_l    = NY_l    + nEff;
-        elseif ca == COL_P
-            sumP_l  = sumP_l  + nEff * mLate(a);
-            sumP2_l = sumP2_l + nEff * msqLate(a);
-            NP_l    = NP_l    + nEff;
-        end
-
-        if cb == COL_Y
-            sumY_l  = sumY_l  + nEff * mLate(b);
-            sumY2_l = sumY2_l + nEff * msqLate(b);
-            NY_l    = NY_l    + nEff;
-        elseif cb == COL_P
-            sumP_l  = sumP_l  + nEff * mLate(b);
-            sumP2_l = sumP2_l + nEff * msqLate(b);
-            NP_l    = NP_l    + nEff;
-        end
+    % For each window store mu/var/N for Y and P
+    fields = ["muY","muP","varY","varP","NY","NP","colorIndex","dprime","z","p"];
+    for f = fields
+        ColorTune.early.(f) = nan(nSites,1);
+        ColorTune.late.(f)  = nan(nSites,1);
     end
 
-    % Compute stats for early + late
-    [muY, varY, muP, varP, NY, NP, cind, dp, z, p] = compute_metrics(sumY_e,sumY2_e,NY_e,sumP_e,sumP2_e,NP_e,useBesselCorrection);
-    ColorTune.early.muY(iSite) = muY;  ColorTune.early.varY(iSite) = varY;  ColorTune.early.NY(iSite) = NY;
-    ColorTune.early.muP(iSite) = muP;  ColorTune.early.varP(iSite) = varP;  ColorTune.early.NP(iSite) = NP;
-    ColorTune.early.colorIndex(iSite) = cind;
-    ColorTune.early.dprime(iSite)     = dp;
-    ColorTune.early.z(iSite)          = z;
-    ColorTune.early.p(iSite)          = p;
+    % -----------------------
+    % Main loop over sites (only compute kept ones)
+    % -----------------------
+    for iSite = keepSites(:).'
+        s = v1RowsInR(iSite); % row in R
 
-    [muY, varY, muP, varP, NY, NP, cind, dp, z, p] = compute_metrics(sumY_l,sumY2_l,NY_l,sumP_l,sumP2_l,NP_l,useBesselCorrection);
-    ColorTune.late.muY(iSite) = muY;   ColorTune.late.varY(iSite) = varY;   ColorTune.late.NY(iSite) = NY;
-    ColorTune.late.muP(iSite) = muP;   ColorTune.late.varP(iSite) = varP;   ColorTune.late.NP(iSite) = NP;
-    ColorTune.late.colorIndex(iSite) = cind;
-    ColorTune.late.dprime(iSite)     = dp;
-    ColorTune.late.z(iSite)          = z;
-    ColorTune.late.p(iSite)          = p;
+        % Pre-fetch responses for speed
+        mEarly  = squeeze(R.meanAct(s,:,WIN_EARLY)).';   % [384 x 1]
+        msqEarly= squeeze(R.meanSqAct(s,:,WIN_EARLY)).'; % [384 x 1]
+        mLate   = squeeze(R.meanAct(s,:,WIN_LATE)).';
+        msqLate = squeeze(R.meanSqAct(s,:,WIN_LATE)).';
+
+        % Accumulators for early
+        sumY_e = 0; sumY2_e = 0; NY_e = 0;
+        sumP_e = 0; sumP2_e = 0; NP_e = 0;
+
+        % Accumulators for late
+        sumY_l = 0; sumY2_l = 0; NY_l = 0;
+        sumP_l = 0; sumP2_l = 0; NP_l = 0;
+
+        for ip = 1:nPairs
+            a = pairsA(ip);
+            b = pairsB(ip);
+
+            na = nTrials(a);
+            nb = nTrials(b);
+            nEff = min(na, nb);
+
+            if nEff <= 0
+                continue;
+            end
+
+            % Exclude background: if RF on gray in BOTH, skip.
+            % (In your design, if it's gray in one it should be gray in complement too.)
+            ca = CC(iSite,a);
+            cb = CC(iSite,b);
+
+            if (ca == COL_G) && (cb == COL_G)
+                continue;
+            end
+
+            % Safety: if either is missing/empty, skip
+            if (ca == "" || ismissing(ca) || cb == "" || ismissing(cb))
+                continue;
+            end
+
+            % Early window: stimulus a contributes to color ca, stimulus b contributes to color cb
+            % Add nEff "balanced" trials from each
+            if ca == COL_Y
+                sumY_e  = sumY_e  + nEff * mEarly(a);
+                sumY2_e = sumY2_e + nEff * msqEarly(a);
+                NY_e    = NY_e    + nEff;
+            elseif ca == COL_P
+                sumP_e  = sumP_e  + nEff * mEarly(a);
+                sumP2_e = sumP2_e + nEff * msqEarly(a);
+                NP_e    = NP_e    + nEff;
+            end
+
+            if cb == COL_Y
+                sumY_e  = sumY_e  + nEff * mEarly(b);
+                sumY2_e = sumY2_e + nEff * msqEarly(b);
+                NY_e    = NY_e    + nEff;
+            elseif cb == COL_P
+                sumP_e  = sumP_e  + nEff * mEarly(b);
+                sumP2_e = sumP2_e + nEff * msqEarly(b);
+                NP_e    = NP_e    + nEff;
+            end
+
+            % Late window
+            if ca == COL_Y
+                sumY_l  = sumY_l  + nEff * mLate(a);
+                sumY2_l = sumY2_l + nEff * msqLate(a);
+                NY_l    = NY_l    + nEff;
+            elseif ca == COL_P
+                sumP_l  = sumP_l  + nEff * mLate(a);
+                sumP2_l = sumP2_l + nEff * msqLate(a);
+                NP_l    = NP_l    + nEff;
+            end
+
+            if cb == COL_Y
+                sumY_l  = sumY_l  + nEff * mLate(b);
+                sumY2_l = sumY2_l + nEff * msqLate(b);
+                NY_l    = NY_l    + nEff;
+            elseif cb == COL_P
+                sumP_l  = sumP_l  + nEff * mLate(b);
+                sumP2_l = sumP2_l + nEff * msqLate(b);
+                NP_l    = NP_l    + nEff;
+            end
+        end
+
+        % Compute stats for early + late
+        [muY, varY, muP, varP, NY, NP, cind, dp, z, p] = compute_metrics(sumY_e,sumY2_e,NY_e,sumP_e,sumP2_e,NP_e,useBesselCorrection);
+        ColorTune.early.muY(iSite) = muY;  ColorTune.early.varY(iSite) = varY;  ColorTune.early.NY(iSite) = NY;
+        ColorTune.early.muP(iSite) = muP;  ColorTune.early.varP(iSite) = varP;  ColorTune.early.NP(iSite) = NP;
+        ColorTune.early.colorIndex(iSite) = cind;
+        ColorTune.early.dprime(iSite)     = dp;
+        ColorTune.early.z(iSite)          = z;
+        ColorTune.early.p(iSite)          = p;
+
+        [muY, varY, muP, varP, NY, NP, cind, dp, z, p] = compute_metrics(sumY_l,sumY2_l,NY_l,sumP_l,sumP2_l,NP_l,useBesselCorrection);
+        ColorTune.late.muY(iSite) = muY;   ColorTune.late.varY(iSite) = varY;   ColorTune.late.NY(iSite) = NY;
+        ColorTune.late.muP(iSite) = muP;   ColorTune.late.varP(iSite) = varP;   ColorTune.late.NP(iSite) = NP;
+        ColorTune.late.colorIndex(iSite) = cind;
+        ColorTune.late.dprime(iSite)     = dp;
+        ColorTune.late.z(iSite)          = z;
+        ColorTune.late.p(iSite)          = p;
+    end
+
+    fprintf('Done. Example: median d'' early (kept) = %.3f\n', median(ColorTune.early.dprime(keepSites), 'omitnan'));
 end
 
-fprintf('Done. Example: median d'' early (kept) = %.3f\n', median(ColorTune.early.dprime(keepSites), 'omitnan'));
+if ~isfield(ColorTune, 'keepSites') || isempty(ColorTune.keepSites)
+    ColorTune.keepSites = keepSites;
+end
+if ~isfield(ColorTune, 'thr') || isempty(ColorTune.thr)
+    ColorTune.thr = SNRthr;
+end
+if loadedLegacyColorTune && ~isequal(ColorTune.keepSites(:), keepSites(:))
+    fprintf(['Historical V1 color file uses %d keep-sites; current workspace has %d. ' ...
+        'Plotting will follow the historical keep-sites so the color-index histogram stays stable.\n'], ...
+        numel(ColorTune.keepSites), numel(keepSites));
+end
+
+plotKeepSites = ColorTune.keepSites(:);
+
+% Add paired precision-weighted significance using the shared helper while
+% preserving the historical pooled colorIndex/dprime/z outputs above.
+siteRows = (1:nSites).';
+ColorTunePair = compute_color_tuning_balanced_sites(R, Tall_V1, siteRows, plotKeepSites, ...
+    'WIN_EARLY', WIN_EARLY, 'WIN_LATE', WIN_LATE, ...
+    'useBesselCorrection', useBesselCorrection, 'Verbose', true);
+pairedFields = ["pairedMuY","pairedMuP","pairedMeanDiff","pairedWeightedDiff", ...
+    "pairedWeightSum","pairedEffN","pairedT","pairedP","pairedNPairs"];
+for f = pairedFields
+    ColorTune.early.(f) = ColorTunePair.early.(f);
+    ColorTune.late.(f) = ColorTunePair.late.(f);
+end
+
+ciEarlyAll = ColorTune.early.colorIndex(plotKeepSites);
+pEarlyAll = ColorTune.early.p(plotKeepSites);
+keepEarly = isfinite(ciEarlyAll);
+ciEarly = ciEarlyAll(keepEarly);
+sigEarlyMask = keepEarly & isfinite(pEarlyAll) & (pEarlyAll < alpha);
+ciEarlySig = ciEarlyAll(sigEarlyMask);
+
+ciLateAll = ColorTune.late.colorIndex(plotKeepSites);
+pLateAll = ColorTune.late.p(plotKeepSites);
+keepLate = isfinite(ciLateAll);
+ciLate = ciLateAll(keepLate);
+sigLateMask = keepLate & isfinite(pLateAll) & (pLateAll < alpha);
+ciLateSig = ciLateAll(sigLateMask);
+
+fprintf('Significant V1 color tuning by pooled test (p < %.2f): early=%d late=%d\n', ...
+    alpha, nnz(sigEarlyMask), nnz(sigLateMask));
+
+figure('Color','w');
+useTiled = exist('tiledlayout', 'file') == 2;
+if useTiled
+    tiledlayout(1, 2, 'TileSpacing', 'compact', 'Padding', 'compact');
+end
+
+if useTiled, nexttile; else, subplot(1, 2, 1); end
+hEarly = histogram(ciEarly, 30, 'FaceColor', [0.8 0.8 0.8], 'EdgeColor', 'none');
+hold on;
+histogram(ciEarlySig, 'BinEdges', hEarly.BinEdges, 'FaceColor', [0.8 0 0], 'EdgeColor', 'none');
+xline(0, 'k-');
+xlabel('Color Index (yellow - purple)');
+ylabel('Number of sites');
+title('Early');
+legend('All sites', sprintf('Significant (p<%.2f)', alpha));
+grid on;
+
+if useTiled, nexttile; else, subplot(1, 2, 2); end
+hLate = histogram(ciLate, 30, 'FaceColor', [0.8 0.8 0.8], 'EdgeColor', 'none');
+hold on;
+histogram(ciLateSig, 'BinEdges', hLate.BinEdges, 'FaceColor', [0.8 0 0], 'EdgeColor', 'none');
+xline(0, 'k-');
+xlabel('Color Index (yellow - purple)');
+ylabel('Number of sites');
+title('Late');
+legend('All sites', sprintf('Significant (p<%.2f)', alpha));
+grid on;
+
+if exist('sgtitle', 'file') == 2
+    sgtitle(sprintf('V1 Color tuning, SNR>%.2f', SNRthr));
+end
 
 % Optional save
 % save('ColorTune_balanced_V1.mat','ColorTune');

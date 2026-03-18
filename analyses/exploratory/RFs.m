@@ -43,7 +43,7 @@ fprintf('Using indices: V1=%d, V4=%d, IT=%d\n', numel(V1), numel(V4), numel(IT))
 %   V1 = 1:512; V4 = 513:768; IT = 769:1024;
 
 
-k = 0.2;                    % scale factor for RF box size (set to 2 for 2*sigma, etc.)
+k = 0.2;                  % scale factor for RF box size (set to 2 for 2*sigma, etc.)
 pad = 1;                  % padding (deg) around plot limits
 
 % Colors (RGB)

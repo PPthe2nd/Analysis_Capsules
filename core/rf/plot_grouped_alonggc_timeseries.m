@@ -144,8 +144,8 @@ if mode == "overlay"
         ylabel(ax, 'Mean |T-D|');
         title(ax, sprintf('Grouped mean activity time-courses (all groups, smoothW=%d)', smoothW));
     else
-        ylabel(ax, 'Mean signed \Delta (T-D)');
-        title(ax, sprintf('Grouped mean signed \Delta (T-D) time-courses (all groups, smoothW=%d)', smoothW));
+        ylabel(ax, 'Mean signed delta (T-D)');
+        title(ax, sprintf('Grouped mean signed delta (T-D) time-courses (all groups, smoothW=%d)', smoothW));
     end
     legend(ax, 'Location', 'eastoutside');
 
@@ -191,8 +191,8 @@ else
         ylabel(tl, 'Mean |T-D|');
         title(tl, sprintf('Grouped mean activity time-courses (smoothW=%d)', smoothW));
     else
-        ylabel(tl, 'Mean signed \Delta (T-D)');
-        title(tl, sprintf('Grouped mean signed \Delta (T-D) time-courses (smoothW=%d)', smoothW));
+        ylabel(tl, 'Mean signed delta (T-D)');
+        title(tl, sprintf('Grouped mean signed delta (T-D) time-courses (smoothW=%d)', smoothW));
     end
 
     h = struct();

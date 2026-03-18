@@ -2,7 +2,7 @@
 % Grouped V4 attention analysis on the line-task stimulus set.
 %
 % This mirrors the grouped along_GC path from Attention_Line_Stimuli.m:
-% - significance mask from the 3-bin late-window analysis
+% - site selection from a shared mask (by default all visually responsive sites)
 % - post-affine signed T-D values from 20 ms response bins
 % - equal-count grouping of valid (site, quartet) combinations by along_GC
 % - grouped pre/post stills and grouped time-series
@@ -29,10 +29,14 @@ PreEndMs = 0; % pre bins satisfy end <= this time
 PostStartMs = 300; % post bins satisfy start >= this time
 GroupPreQuantilePct = 99.98; % grouped threshold from pre-stim absolute values
 GroupCMaxPostPct = 95; % grouped color max suggestion from post-stim absolute values
-UseSiteWeights = true; % same reliability-weighted grouped means as V1
+SiteInclusionMode = 'visual'; % 'significant' or 'visual'
+VisualSNRthr = 0.70; % used when SiteInclusionMode='visual'
+UseSiteWeights = true;
+SiteWeightMode = 'dprime'; % 'reliability' or 'dprime'
 GroupWeightLambda = 1e-6; % stabilizer in the reliability denominator
 GroupWeightUseNmatch = true; % multiply by sqrt(wY + wP)
 GroupWeightClipPct = 95; % cap extreme site weights
+GroupWeightMin = 0; % optional floor on positive weights (0 = disabled)
 PlotAlpha = 0.30; % used only for the grouped movie
 PlotBgColor = [0.5 0.5 0.5];
 PlotCLow = [0.50 0.50 0.50];
@@ -79,18 +83,41 @@ else
         'Monkey must be 1 (Nilson) or 2 (Figaro).');
 end
 
+siteInclusionMode = lower(string(SiteInclusionMode));
+siteWeightMode = lower(string(SiteWeightMode));
+assert(any(siteInclusionMode == ["significant","visual"]), ...
+    'SiteInclusionMode must be ''significant'' or ''visual''.');
+assert(any(siteWeightMode == ["reliability","dprime"]), ...
+    'SiteWeightMode must be ''reliability'' or ''dprime''.');
+
+selectionTagSuffix = '';
+if siteInclusionMode ~= "significant" || siteWeightMode ~= "reliability"
+    modeParts = strings(0,1);
+    if siteInclusionMode == "visual"
+        snrTag = strrep(sprintf('%.2f', VisualSNRthr), '.', 'p');
+        modeParts(end+1) = "allvis"; %#ok<SAGROW>
+        modeParts(end+1) = "snr" + string(snrTag); %#ok<SAGROW>
+    end
+    if siteWeightMode == "dprime"
+        modeParts(end+1) = "wdprime"; %#ok<SAGROW>
+    elseif siteWeightMode == "reliability" && siteInclusionMode ~= "significant"
+        modeParts(end+1) = "wreliability"; %#ok<SAGROW>
+    end
+    selectionTagSuffix = ['_' char(strjoin(modeParts, '_'))];
+end
+
 tallPath = fullfile(cfg.matDir, tallFile);
 resp3binPath = fullfile(cfg.matDir, resp3binFile);
 respMoviePath = fullfile(cfg.matDir, respMovieFile);
 outValuesFile = fullfile(cfg.resultsDir, ...
-    sprintf('post_affine_delta_points_allbins_V4_%s_stim%03d_%s.mat', ...
-    char(monkeySuffix), ExampleStimulus, RespMovieTag));
+    sprintf('post_affine_delta_points_allbins_V4_%s_stim%03d_%s%s.mat', ...
+    char(monkeySuffix), ExampleStimulus, RespMovieTag, selectionTagSuffix));
 groupedFile = fullfile(cfg.resultsDir, ...
-    sprintf('grouped_alonggc_polygons_V4_%s_stim%03d_N%d_%s.mat', ...
-    char(monkeySuffix), ExampleStimulus, GroupN, RespMovieTag));
+    sprintf('grouped_alonggc_polygons_V4_%s_stim%03d_N%d_%s%s.mat', ...
+    char(monkeySuffix), ExampleStimulus, GroupN, RespMovieTag, selectionTagSuffix));
 outMovieGrouped = fullfile(cfg.resultsDir, ...
-    sprintf('V4_attentiondiff_groupedpolygons_%s_N%d_%s_stim%03d.mp4', ...
-    char(monkeySuffix), GroupN, RespMovieTag, ExampleStimulus));
+    sprintf('V4_attentiondiff_groupedpolygons_%s_N%d_%s_stim%03d%s.mp4', ...
+    char(monkeySuffix), GroupN, RespMovieTag, ExampleStimulus, selectionTagSuffix));
 
 assert(exist(tallPath, 'file') == 2, ...
     'Missing %s. Run Line_Stimuli_V4.m first.', tallPath);
@@ -131,23 +158,59 @@ opts3 = struct('v1Sites', siteRows, 'timeIdx', TimeIdx3, ...
     'excludeOverlap', ExcludeOverlap, 'verbose', false, 'epsDen', 1e-6);
 OUT3 = attention_modulation_V1_3bin(R3dec, Tall_V4, SNRnorm, opts3);
 
+snrFields = {'yellowEarly','yellowLate','purpleEarly','purpleLate'};
+SNRmatAll = nan(nV4, numel(snrFields));
+for k = 1:numel(snrFields)
+    assert(isfield(SNRnorm, snrFields{k}), ...
+        'SNR normalization struct missing field %s.', snrFields{k});
+    v = double(SNRnorm.(snrFields{k})(:));
+    assert(numel(v) >= nV4, ...
+        'SNR normalization field %s has only %d values; need at least %d.', ...
+        snrFields{k}, numel(v), nV4);
+    SNRmatAll(:,k) = v(1:nV4);
+end
+bestSNRAll = max(SNRmatAll, [], 2, 'omitnan');
+
 sigSiteByIndex = isfinite(OUT3.pValueTD(:)) & (OUT3.pValueTD(:) < pThresh);
-fprintf('V4 grouped attention mask: %d / %d sites with pTD < %.3f\n', ...
+visSiteByIndex = isfinite(bestSNRAll) & (bestSNRAll > VisualSNRthr);
+selectedSiteByIndex = sigSiteByIndex;
+selectedSiteLabel = sprintf('significant sites (pTD < %.3f)', pThresh);
+switch char(siteInclusionMode)
+    case 'significant'
+        selectedSiteByIndex = sigSiteByIndex;
+    case 'visual'
+        selectedSiteByIndex = visSiteByIndex;
+        selectedSiteLabel = sprintf('visually responsive sites (bestSNR > %.2f)', VisualSNRthr);
+end
+fprintf('V4 grouped attention mask: significant %d / %d sites with pTD < %.3f\n', ...
     nnz(sigSiteByIndex), nV4, pThresh);
-assert(any(sigSiteByIndex), 'No V4 sites passed pTD < %.3f.', pThresh);
+fprintf('Site inclusion mode: %s | kept %d / %d sites\n', ...
+    selectedSiteLabel, nnz(selectedSiteByIndex), nV4);
+assert(any(selectedSiteByIndex), 'No V4 sites passed the selected inclusion gate.');
 
 siteWeightsByIndex = [];
 if UseSiteWeights
-    assert(all(isfield(OUT3, {'muT','muD','varT','varD'})), ...
-        'OUT3 must contain muT/muD/varT/varD for site weighting.');
-    dSite = double(OUT3.muT(:) - OUT3.muD(:));
-    varSite = 0.5 * (double(OUT3.varT(:)) + double(OUT3.varD(:)));
-    varSite(~isfinite(varSite) | varSite < 0) = 0;
-    den = sqrt(varSite + max(GroupWeightLambda, 0));
-    den(~isfinite(den) | den <= 0) = NaN;
-    siteWeightsByIndex = abs(dSite) ./ den;
+    switch char(siteWeightMode)
+        case 'reliability'
+            assert(all(isfield(OUT3, {'muT','muD','varT','varD'})), ...
+                'OUT3 must contain muT/muD/varT/varD for site weighting.');
+            dSite = double(OUT3.muT(:) - OUT3.muD(:));
+            varSite = 0.5 * (double(OUT3.varT(:)) + double(OUT3.varD(:)));
+            varSite(~isfinite(varSite) | varSite < 0) = 0;
+            den = sqrt(varSite + max(GroupWeightLambda, 0));
+            den(~isfinite(den) | den <= 0) = NaN;
+            siteWeightsByIndex = abs(dSite) ./ den;
+        case 'dprime'
+            assert(isfield(OUT3, 'dprime'), ...
+                'OUT3 must contain dprime for dprime weighting.');
+            siteWeightsByIndex = abs(double(OUT3.dprime(:)));
+    end
 
-    if GroupWeightUseNmatch
+    applyNmatchWeight = GroupWeightUseNmatch;
+    if siteWeightMode == "dprime"
+        applyNmatchWeight = false;
+    end
+    if applyNmatchWeight
         assert(all(isfield(OUT3, {'wY','wP'})), ...
             'OUT3 must contain wY/wP when GroupWeightUseNmatch=true.');
         nMatch = double(OUT3.wY(:) + OUT3.wP(:));
@@ -156,7 +219,7 @@ if UseSiteWeights
     end
 
     siteWeightsByIndex(~isfinite(siteWeightsByIndex) | siteWeightsByIndex < 0) = 0;
-    siteWeightsByIndex(~sigSiteByIndex) = 0;
+    siteWeightsByIndex(~selectedSiteByIndex) = 0;
 
     wPos = siteWeightsByIndex(siteWeightsByIndex > 0);
     if ~isempty(wPos) && isfinite(GroupWeightClipPct) && ...
@@ -166,6 +229,10 @@ if UseSiteWeights
             siteWeightsByIndex = min(siteWeightsByIndex, wCap);
         end
     end
+    if isfinite(GroupWeightMin) && GroupWeightMin > 0
+        pos = siteWeightsByIndex > 0;
+        siteWeightsByIndex(pos) = max(siteWeightsByIndex(pos), GroupWeightMin);
+    end
 
     wPos = siteWeightsByIndex(siteWeightsByIndex > 0);
     if isempty(wPos)
@@ -173,9 +240,9 @@ if UseSiteWeights
                  'site weights were obtained. Falling back to unweighted grouped means.']);
         siteWeightsByIndex = [];
     else
-        fprintf(['Fixed site weights ready: nPos=%d | min/median/max=%.6g / %.6g / %.6g | ' ...
+        fprintf(['Fixed site weights (%s) ready: nPos=%d | min/median/max=%.6g / %.6g / %.6g | ' ...
                  'clip p%.2f\n'], ...
-            numel(wPos), min(wPos), median(wPos), max(wPos), GroupWeightClipPct);
+            char(siteWeightMode), numel(wPos), min(wPos), median(wPos), max(wPos), GroupWeightClipPct);
     end
 end
 
@@ -220,7 +287,7 @@ if isempty(OUT_postAffine)
         'siteRange', siteRows, ...
         'excludeOverlap', ExcludeOverlap, ...
         'stimIdx', 1:384, ...
-        'sigSiteMask', sigSiteByIndex, ...
+        'sigSiteMask', selectedSiteByIndex, ...
         'saveFile', outValuesFile, ...
         'verbose', true);
     fprintf('Saved V4 post-affine values to: %s\n', outValuesFile);
@@ -246,7 +313,7 @@ if RUN_GROUP_POLYGON_PREP || isempty(GGROUP)
     GGROUP = build_grouped_alonggc_polygons_allbins( ...
         OUT_postAffine, Tall_V4, ...
         'nGroups', GroupN, ...
-        'sigSiteByIndex', sigSiteByIndex, ...
+        'sigSiteByIndex', selectedSiteByIndex, ...
         'siteWeightsByIndex', weightsForGrouping, ...
         'preEndMs', PreEndMs, ...
         'postStartMs', PostStartMs, ...
@@ -443,6 +510,9 @@ V4Grouped.monkeySuffix = monkeySuffix;
 V4Grouped.RFrange = RFrange;
 V4Grouped.OUT3 = OUT3;
 V4Grouped.sigSiteByIndex = sigSiteByIndex;
+V4Grouped.visSiteByIndex = visSiteByIndex;
+V4Grouped.selectedSiteByIndex = selectedSiteByIndex;
+V4Grouped.selectedSiteLabel = selectedSiteLabel;
 V4Grouped.siteWeightsByIndex = siteWeightsByIndex;
 V4Grouped.OUT_postAffine = OUT_postAffine;
 V4Grouped.GGROUP = GGROUP;

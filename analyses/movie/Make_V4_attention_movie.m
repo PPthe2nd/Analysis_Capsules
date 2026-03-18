@@ -1,7 +1,7 @@
 % Render a V4 attention-effect movie for the line-task stimulus set.
 %
 % This follows the active V1 post-affine movie path:
-% - significant-site mask from the 3-bin late-window analysis
+% - shared site-selection mask (by default all visually responsive sites)
 % - time-resolved bins from the 20 ms response file
 % - post-affine KNN pooling with prep-calibrated threshold and color scale
 
@@ -28,7 +28,10 @@ PostStartMs = 300; % post bins satisfy window start >= this time
 PreQuantilePct = 99.98; % threshold from pre-stim pooled absolute values
 AlphaFloorPct = 80; % retained for parity with the prep summary
 CMaxPostPct = 95; % color max suggestion from post-stim pooled values
-UseSiteWeights = true; % use the same reliability-weighted KNN averaging as V1
+SiteInclusionMode = 'visual'; % 'significant' or 'visual'
+VisualSNRthr = 0.70; % used when SiteInclusionMode='visual'
+UseSiteWeights = true;
+SiteWeightMode = 'dprime'; % 'reliability' or 'dprime'
 GroupWeightLambda = 1e-6; % stabilizer in the reliability denominator
 GroupWeightUseNmatch = true; % multiply weights by sqrt(wY + wP)
 GroupWeightClipPct = 95; % cap extreme positive weights
@@ -51,18 +54,41 @@ else
         'Monkey must be 1 (Nilson) or 2 (Figaro).');
 end
 
+siteInclusionMode = lower(string(SiteInclusionMode));
+siteWeightMode = lower(string(SiteWeightMode));
+assert(any(siteInclusionMode == ["significant","visual"]), ...
+    'SiteInclusionMode must be ''significant'' or ''visual''.');
+assert(any(siteWeightMode == ["reliability","dprime"]), ...
+    'SiteWeightMode must be ''reliability'' or ''dprime''.');
+
+selectionTagSuffix = '';
+if siteInclusionMode ~= "significant" || siteWeightMode ~= "reliability"
+    modeParts = strings(0,1);
+    if siteInclusionMode == "visual"
+        snrTag = strrep(sprintf('%.2f', VisualSNRthr), '.', 'p');
+        modeParts(end+1) = "allvis"; %#ok<SAGROW>
+        modeParts(end+1) = "snr" + string(snrTag); %#ok<SAGROW>
+    end
+    if siteWeightMode == "dprime"
+        modeParts(end+1) = "wdprime"; %#ok<SAGROW>
+    elseif siteWeightMode == "reliability" && siteInclusionMode ~= "significant"
+        modeParts(end+1) = "wreliability"; %#ok<SAGROW>
+    end
+    selectionTagSuffix = ['_' char(strjoin(modeParts, '_'))];
+end
+
 tallPath = fullfile(cfg.matDir, tallFile);
 resp3binPath = fullfile(cfg.matDir, resp3binFile);
 respMoviePath = fullfile(cfg.matDir, respMovieFile);
 outValuesFile = fullfile(cfg.resultsDir, ...
-    sprintf('post_affine_delta_points_allbins_V4_%s_stim%03d_%s.mat', ...
-    char(monkeySuffix), ExampleStimulus, RespMovieTag));
+    sprintf('post_affine_delta_points_allbins_V4_%s_stim%03d_%s%s.mat', ...
+    char(monkeySuffix), ExampleStimulus, RespMovieTag, selectionTagSuffix));
 prepNoiseFile = fullfile(cfg.resultsDir, ...
-    sprintf('knn_noise_signal_prep_V4_%s_stim%03d_%s.mat', ...
-    char(monkeySuffix), ExampleStimulus, RespMovieTag));
+    sprintf('knn_noise_signal_prep_V4_%s_stim%03d_%s%s.mat', ...
+    char(monkeySuffix), ExampleStimulus, RespMovieTag, selectionTagSuffix));
 outMovie = fullfile(cfg.resultsDir, ...
-    sprintf('V4_attentiondiff_movie_postaffine_%s_K%d_%s_stim%03d.mp4', ...
-    char(monkeySuffix), PrepK, RespMovieTag, ExampleStimulus));
+    sprintf('V4_attentiondiff_movie_postaffine_%s_K%d_%s_stim%03d%s.mp4', ...
+    char(monkeySuffix), PrepK, RespMovieTag, ExampleStimulus, selectionTagSuffix));
 
 if exist(outMovie, 'file') == 2 && ~ForceRender
     fprintf('Skipping V4 attention movie because output already exists:\n%s\n', outMovie);
@@ -108,23 +134,59 @@ optsTD = struct('v1Sites', siteRows, 'timeIdx', TimeIdx3, ...
     'excludeOverlap', ExcludeOverlap, 'verbose', false, 'epsDen', 1e-6);
 OUT3 = attention_modulation_V1_3bin(R3dec, Tall_V4, SNRnorm, optsTD);
 
+snrFields = {'yellowEarly','yellowLate','purpleEarly','purpleLate'};
+SNRmatAll = nan(nV4, numel(snrFields));
+for k = 1:numel(snrFields)
+    assert(isfield(SNRnorm, snrFields{k}), ...
+        'SNR normalization struct missing field %s.', snrFields{k});
+    v = double(SNRnorm.(snrFields{k})(:));
+    assert(numel(v) >= nV4, ...
+        'SNR normalization field %s has only %d values; need at least %d.', ...
+        snrFields{k}, numel(v), nV4);
+    SNRmatAll(:,k) = v(1:nV4);
+end
+bestSNRAll = max(SNRmatAll, [], 2, 'omitnan');
+
 isSig = isfinite(OUT3.pValueTD) & (OUT3.pValueTD < pTDthr);
-fprintf('V4 attention movie mask: %d / %d sites with pTD < %.3f\n', ...
+isVis = isfinite(bestSNRAll) & (bestSNRAll > VisualSNRthr);
+selectedSiteByIndex = isSig;
+selectedSiteLabel = sprintf('significant sites (pTD < %.3f)', pTDthr);
+switch char(siteInclusionMode)
+    case 'significant'
+        selectedSiteByIndex = isSig;
+    case 'visual'
+        selectedSiteByIndex = isVis;
+        selectedSiteLabel = sprintf('visually responsive sites (bestSNR > %.2f)', VisualSNRthr);
+end
+fprintf('V4 attention movie mask: significant %d / %d sites with pTD < %.3f\n', ...
     nnz(isSig), nV4, pTDthr);
-assert(any(isSig), 'No V4 sites passed pTD < %.3f.', pTDthr);
+fprintf('Site inclusion mode: %s | kept %d / %d sites\n', ...
+    selectedSiteLabel, nnz(selectedSiteByIndex), nV4);
+assert(any(selectedSiteByIndex), 'No V4 sites passed the selected inclusion gate.');
 
 siteWeightsByIndex = [];
 if UseSiteWeights
-    assert(all(isfield(OUT3, {'muT','muD','varT','varD'})), ...
-        'OUT3 must contain muT/muD/varT/varD for site weighting.');
-    dSite = double(OUT3.muT(:) - OUT3.muD(:));
-    varSite = 0.5 * (double(OUT3.varT(:)) + double(OUT3.varD(:)));
-    varSite(~isfinite(varSite) | varSite < 0) = 0;
-    den = sqrt(varSite + max(GroupWeightLambda, 0));
-    den(~isfinite(den) | den <= 0) = NaN;
-    siteWeightsByIndex = abs(dSite) ./ den;
+    switch char(siteWeightMode)
+        case 'reliability'
+            assert(all(isfield(OUT3, {'muT','muD','varT','varD'})), ...
+                'OUT3 must contain muT/muD/varT/varD for site weighting.');
+            dSite = double(OUT3.muT(:) - OUT3.muD(:));
+            varSite = 0.5 * (double(OUT3.varT(:)) + double(OUT3.varD(:)));
+            varSite(~isfinite(varSite) | varSite < 0) = 0;
+            den = sqrt(varSite + max(GroupWeightLambda, 0));
+            den(~isfinite(den) | den <= 0) = NaN;
+            siteWeightsByIndex = abs(dSite) ./ den;
+        case 'dprime'
+            assert(isfield(OUT3, 'dprime'), ...
+                'OUT3 must contain dprime for dprime weighting.');
+            siteWeightsByIndex = abs(double(OUT3.dprime(:)));
+    end
 
-    if GroupWeightUseNmatch
+    applyNmatchWeight = GroupWeightUseNmatch;
+    if siteWeightMode == "dprime"
+        applyNmatchWeight = false;
+    end
+    if applyNmatchWeight
         assert(all(isfield(OUT3, {'wY','wP'})), ...
             'OUT3 must contain wY/wP when GroupWeightUseNmatch=true.');
         nMatch = double(OUT3.wY(:) + OUT3.wP(:));
@@ -133,7 +195,7 @@ if UseSiteWeights
     end
 
     siteWeightsByIndex(~isfinite(siteWeightsByIndex) | siteWeightsByIndex < 0) = 0;
-    siteWeightsByIndex(~isSig) = 0;
+    siteWeightsByIndex(~selectedSiteByIndex) = 0;
 
     wPos = siteWeightsByIndex(siteWeightsByIndex > 0);
     if ~isempty(wPos) && isfinite(GroupWeightClipPct) && ...
@@ -150,9 +212,9 @@ if UseSiteWeights
                  'site weights were obtained. Falling back to unweighted averaging.']);
         siteWeightsByIndex = [];
     else
-        fprintf(['Fixed site weights ready: nPos=%d | min/median/max=%.6g / %.6g / %.6g | ' ...
+        fprintf(['Fixed site weights (%s) ready: nPos=%d | min/median/max=%.6g / %.6g / %.6g | ' ...
                  'clip p%.2f\n'], ...
-            numel(wPos), min(wPos), median(wPos), max(wPos), GroupWeightClipPct);
+            char(siteWeightMode), numel(wPos), min(wPos), median(wPos), max(wPos), GroupWeightClipPct);
     end
 end
 
@@ -181,7 +243,7 @@ OUT_postAffine = compute_projected_delta_points_allbins( ...
     'siteRange', siteRows, ...
     'excludeOverlap', ExcludeOverlap, ...
     'stimIdx', 1:384, ...
-    'sigSiteMask', isSig, ...
+    'sigSiteMask', selectedSiteByIndex, ...
     'saveFile', outValuesFile, ...
     'verbose', true);
 
