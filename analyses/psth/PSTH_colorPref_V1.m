@@ -30,13 +30,21 @@ COL_G = "gray";
 % -----------------------
 % BASIC DIMS
 % -----------------------
-nStim   = numel(R.nTrials);
-nTrials = double(R.nTrials(:));
-assert(nStim == 384, 'Expected 384 stimuli.');
-
 [nCh, nStim2, nBins] = size(R.meanAct);
-assert(nStim2 == nStim, 'R.meanAct stimulus dim mismatch.');
+nStim = nStim2;
+assert(nStim == 384, 'Expected 384 stimuli.');
 assert(size(R.timeWindows,1) == nBins, 'R.timeWindows rows must equal #bins.');
+
+nTrialsRaw = double(R.nTrials);
+if isvector(nTrialsRaw)
+    nTrials = nTrialsRaw(:);
+    perSiteTrials = false;
+elseif ismatrix(nTrialsRaw) && size(nTrialsRaw,2) == nStim
+    nTrials = [];
+    perSiteTrials = true;
+else
+    error('R.nTrials must be a stimulus vector or a site-by-stimulus matrix.');
+end
 
 % V1 sites: rows 1..512 in R, and rows 1..512 in Tall_V1(stim).T
 v1Sites = 1:512;
@@ -126,6 +134,12 @@ for ii = 1:numel(keepSites)
     site = keepSites(ii);     % 1..512 index into Tall / V1 list
     ch   = v1Sites(site);     % row in R.meanAct (here identity)
 
+    if perSiteTrials
+        nTrSite = double(nTrialsRaw(ch,:)).';
+    else
+        nTrSite = nTrials;
+    end
+
     % Balanced accumulators over time bins (Y/P)
     sumY  = zeros(nBins,1);  sumY2 = zeros(nBins,1);  NY = 0;
     sumP  = zeros(nBins,1);  sumP2 = zeros(nBins,1);  NP = 0;
@@ -137,7 +151,7 @@ for ii = 1:numel(keepSites)
         a = pairsA(ip);
         b = pairsB(ip);
 
-        na = nTrials(a); nb = nTrials(b);
+        na = nTrSite(a); nb = nTrSite(b);
 
         % time courses for these stimuli (nBins x 1)
         ma  = squeeze(R.meanAct(ch,a,:));

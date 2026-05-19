@@ -40,13 +40,12 @@ end
 basePath = fullfile(cfg.matDir, sprintf('Attention_TargetSide_Tuning_IT_directiondelta_%s.mat', char(monkeySuffix)));
 tallPath = fullfile(cfg.matDir, tallFile);
 outPath = fullfile(cfg.matDir, sprintf('Attention_TargetSide_CueDistance_IT_%s.mat', char(monkeySuffix)));
+hasSessionExclusions = ~isempty(site_session_exclusions(monkeySuffix));
 
-assert(exist(basePath, 'file') == 2, ...
-    'Missing %s. Run Attention_TargetSide_Tuning_IT first.', basePath);
 assert(exist(tallPath, 'file') == 2, ...
     'Missing %s. Run Line_Stimuli_IT first.', tallPath);
 
-useCached = exist(outPath, 'file') == 2 && ~P.forceRefit;
+useCached = exist(outPath, 'file') == 2 && ~P.forceRefit && ~hasSessionExclusions;
 needsSave = ~useCached;
 
 if useCached
@@ -61,9 +60,20 @@ if useCached
 end
 
 %% Load base target-direction analysis
-Sbase = load(basePath, 'OUT');
-assert(isfield(Sbase, 'OUT') && isstruct(Sbase.OUT), '%s must contain OUT.', basePath);
-BASE = Sbase.OUT;
+if hasSessionExclusions
+    fprintf(['Session exclusions are active for monkey %s; refreshing IT target-side ' ...
+             'fits before cue-distance analysis.\n'], char(monkeySuffix));
+    BASE = Attention_TargetSide_Tuning_IT(struct( ...
+        'makeSummaryFigures', false, ...
+        'makeExampleFigures', false, ...
+        'makeAngleReferenceFigure', false));
+else
+    assert(exist(basePath, 'file') == 2, ...
+        'Missing %s. Run Attention_TargetSide_Tuning_IT first.', basePath);
+    Sbase = load(basePath, 'OUT');
+    assert(isfield(Sbase, 'OUT') && isstruct(Sbase.OUT), '%s must contain OUT.', basePath);
+    BASE = Sbase.OUT;
+end
 requiredBase = {'QuartetTable','deltaQuartetEarly','deltaQuartetLate','varQuartetEarly', ...
     'varQuartetLate','FitEarly','FitLate','RFrange'};
 for i = 1:numel(requiredBase)

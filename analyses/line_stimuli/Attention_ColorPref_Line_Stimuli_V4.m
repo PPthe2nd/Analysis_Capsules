@@ -86,11 +86,10 @@ Tall_V4 = Sgeo.Tall_V4;
 RFrange = Sgeo.RFrange(:);
 nV4 = numel(RFrange);
 v4Sites = (1:nV4).';
+hasSessionExclusions = ~isempty(site_session_exclusions(monkeySuffix));
 
 %% Load 3-bin response and normalization
-S = load(resp3binPath);
-assert(isfield(S, 'R') && isstruct(S.R), '%s must contain struct R.', resp3binFile);
-R3_full = S.R;
+R3_full = load_capsules_struct_exclusion_aware(resp3binPath, monkeySuffix, 'cfg', cfg);
 R3 = R3_full;
 R3.meanAct = R3_full.meanAct(RFrange, :, :);
 R3.meanSqAct = R3_full.meanSqAct(RFrange, :, :);
@@ -102,16 +101,20 @@ end
 SNR = compute_snr_per_color_sites(R3, Tall_V4, v4Sites, 'Verbose', false);
 
 %% Load or build V4 color tuning
-if exist(colorTunePath, 'file') == 2
+if exist(colorTunePath, 'file') == 2 && ~hasSessionExclusions
     S = load(colorTunePath);
     assert(isfield(S, 'ColorTune') && isstruct(S.ColorTune), ...
         '%s must contain struct ColorTune.', colorTuneFile);
     ColorTune = S.ColorTune;
 else
-    assert(P.autoBuildColorTune, ...
+    assert(P.autoBuildColorTune || hasSessionExclusions, ...
         'Missing %s. Run ColorTuning_Capsules_V4.m first or enable autoBuildColorTune.', colorTunePath);
-
-    fprintf('Color tuning file missing. Computing V4 ColorTune and saving to:\n%s\n', colorTunePath);
+    if hasSessionExclusions
+        fprintf(['Session exclusions are active for monkey %s; recomputing V4 ColorTune ' ...
+                 'from exclusion-aware 3-bin responses.\n'], char(monkeySuffix));
+    else
+        fprintf('Color tuning file missing. Computing V4 ColorTune and saving to:\n%s\n', colorTunePath);
+    end
     SNRmat3 = [SNR.yellowEarly(v4Sites), SNR.yellowLate(v4Sites), ...
                SNR.purpleEarly(v4Sites), SNR.purpleLate(v4Sites)];
     [bestSNR3, ~] = max(SNRmat3, [], 2, 'omitnan');
@@ -124,7 +127,9 @@ else
     ColorTune.bestSNR = bestSNR3;
     ColorTune.RFrange = RFrange;
     ColorTune.monkeySuffix = monkeySuffix;
-    save(colorTunePath, 'ColorTune', '-v7.3');
+    if ~hasSessionExclusions
+        save(colorTunePath, 'ColorTune', '-v7.3');
+    end
 end
 
 assert(isfield(ColorTune, P.colorTuneWindow), ...
@@ -134,7 +139,7 @@ assert(isfield(ColorTune, P.colorTuneWindow), ...
 out3File = fullfile(cfg.resultsDir, ...
     sprintf('OUT_attention_modulation_V4_%s_3bin_timeIdx%d.mat', ...
     char(monkeySuffix), P.attentionTimeIdx));
-if exist(out3File, 'file') == 2
+if exist(out3File, 'file') == 2 && ~hasSessionExclusions
     S = load(out3File, 'OUT');
     assert(isfield(S, 'OUT') && isstruct(S.OUT), ...
         'File %s must contain struct OUT.', out3File);
@@ -146,13 +151,13 @@ else
     OUT = OUT3; %#ok<NASGU>
     meta = struct('created', datestr(now, 30), 'timeIdx', P.attentionTimeIdx, ...
         'monkeySuffix', monkeySuffix); %#ok<NASGU>
-    save(out3File, 'OUT', 'meta', '-v7.3');
+    if ~hasSessionExclusions
+        save(out3File, 'OUT', 'meta', '-v7.3');
+    end
 end
 
 %% Load high-resolution responses and localize to V4 rows
-S = load(respPath);
-assert(isfield(S, 'R') && isstruct(S.R), '%s must contain struct R.', respFile);
-R_full = S.R;
+R_full = load_capsules_struct_exclusion_aware(respPath, monkeySuffix, 'cfg', cfg);
 R_resp = R_full;
 R_resp.meanAct = R_full.meanAct(RFrange, :, :);
 R_resp.meanSqAct = R_full.meanSqAct(RFrange, :, :);

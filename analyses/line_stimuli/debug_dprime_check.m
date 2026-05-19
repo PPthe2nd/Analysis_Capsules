@@ -9,9 +9,7 @@ clc;
 cfg = config();
 
 load(fullfile(cfg.matDir, 'Tall_V1_lines_N.mat'));   % Tall_V1, ALLCOORDS, RTAB384
-load(fullfile(cfg.matDir, 'Resp_capsules_N_d12.mat')); % R (response moments)
-R_resp = R;
-clear R;
+R_resp = load_capsules_struct_exclusion_aware(fullfile(cfg.matDir, 'Resp_capsules_N_d12.mat'), 'N');
 load(fullfile(cfg.matDir, 'SNR_V1_byColor_byWindow.mat')); % SNR
 
 opts = struct();

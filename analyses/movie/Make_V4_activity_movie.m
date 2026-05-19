@@ -81,10 +81,7 @@ nObjectStim = nTargetStim + nDistrStim;
 hasObjectRF = nObjectStim >= MinObjectStim;
 
 % 3-bin responses for site screening and normalization.
-S3 = load(resp3binPath);
-assert(isfield(S3, 'R') && isstruct(S3.R), ...
-    '%s must contain struct R.', resp3binFile);
-R3_full = S3.R;
+R3_full = load_capsules_struct_exclusion_aware(resp3binPath, monkeySuffix, 'cfg', cfg);
 R3 = R3_full;
 R3.meanAct = R3_full.meanAct(RFrange, :, :);
 R3.meanSqAct = R3_full.meanSqAct(RFrange, :, :);
@@ -128,10 +125,7 @@ fprintf('OnlyOnObjects: %d\n', OnlyOnObjects);
 fprintf('Output: %s\n', outFile);
 
 % High-resolution response struct for movie frames.
-Sresp = load(respMoviePath);
-assert(isfield(Sresp, 'R') && isstruct(Sresp.R), ...
-    '%s must contain struct R.', respMovieFile);
-R_resp_full = Sresp.R;
+R_resp_full = load_capsules_struct_exclusion_aware(respMoviePath, monkeySuffix, 'cfg', cfg);
 R_resp = R_resp_full;
 R_resp.meanAct = R_resp_full.meanAct(RFrange, :, :);
 R_resp.meanSqAct = R_resp_full.meanSqAct(RFrange, :, :);

@@ -44,12 +44,15 @@ basePath = fullfile(cfg.matDir, sprintf('Attention_TargetSide_Tuning_IT_directio
 distCtrlPath = fullfile(cfg.matDir, sprintf('Attention_TargetSide_DistanceControl_IT_%s.mat', char(monkeySuffix)));
 tallPath = fullfile(cfg.matDir, tallFile);
 respPath = fullfile(cfg.matDir, resp3binFile);
+hasSessionExclusions = ~isempty(site_session_exclusions(monkeySuffix));
 
-assert(exist(basePath, 'file') == 2, ...
-    'Missing %s. Run Attention_TargetSide_Tuning_IT first.', basePath);
-if strcmpi(P.siteSelectionMode, 'cardinal_plus_dirnotdist')
-    assert(exist(distCtrlPath, 'file') == 2, ...
-        'Missing %s. Run Attention_TargetSide_DistanceControl_IT first.', distCtrlPath);
+if ~hasSessionExclusions
+    assert(exist(basePath, 'file') == 2, ...
+        'Missing %s. Run Attention_TargetSide_Tuning_IT first.', basePath);
+    if strcmpi(P.siteSelectionMode, 'cardinal_plus_dirnotdist')
+        assert(exist(distCtrlPath, 'file') == 2, ...
+            'Missing %s. Run Attention_TargetSide_DistanceControl_IT first.', distCtrlPath);
+    end
 end
 assert(exist(tallPath, 'file') == 2, ...
     'Missing %s. Run Line_Stimuli_IT first.', tallPath);
@@ -57,8 +60,17 @@ assert(exist(respPath, 'file') == 2, ...
     'Missing %s. Create the 3-bin response summary first.', respPath);
 
 %% Load required data
-Sbase = load(basePath, 'OUT');
-BASE = Sbase.OUT;
+if hasSessionExclusions
+    fprintf(['Session exclusions are active for monkey %s; refreshing IT target-side ' ...
+             'fits before plotting example quartets.\n'], char(monkeySuffix));
+    BASE = Attention_TargetSide_Tuning_IT(struct( ...
+        'makeSummaryFigures', false, ...
+        'makeExampleFigures', false, ...
+        'makeAngleReferenceFigure', false));
+else
+    Sbase = load(basePath, 'OUT');
+    BASE = Sbase.OUT;
+end
 assert(isfield(BASE, 'FitLate') && isfield(BASE, 'QuartetTable') && ...
     isfield(BASE, 'deltaQuartetLate') && isfield(BASE, 'RFrange'), ...
     'Base OUT is missing required fields.');
@@ -71,9 +83,7 @@ RTAB384 = Stall.RTAB384;
 RFrange = Stall.RFrange(:);
 Tall_IT = Stall.Tall_IT;
 
-Sresp = load(respPath, 'R');
-assert(isfield(Sresp, 'R') && isstruct(Sresp.R), '%s must contain struct R.', respPath);
-R3_full = Sresp.R;
+R3_full = load_capsules_struct_exclusion_aware(respPath, monkeySuffix, 'cfg', cfg);
 R3.meanAct = R3_full.meanAct(RFrange, :, :);
 R3.meanSqAct = R3_full.meanSqAct(RFrange, :, :);
 if isvector(R3_full.nTrials)
@@ -116,8 +126,12 @@ elseif strcmpi(P.siteSelectionMode, 'cardinal_plus_dirnotdist')
     siteSelCard = siteSelCard(1:min(P.nSites, numel(siteSelCard)));
     selectionLabelCard = repmat("cardinal", numel(siteSelCard), 1);
 
-    Sdist = load(distCtrlPath, 'OUT');
-    D = Sdist.OUT;
+    if hasSessionExclusions
+        D = Attention_TargetSide_DistanceControl_IT(struct('makeSummaryFigure', false));
+    else
+        Sdist = load(distCtrlPath, 'OUT');
+        D = Sdist.OUT;
+    end
     assert(isfield(D, 'ctrlSig') && isfield(D, 'distGivenDirSig') && isfield(D, 'uniqueR2Dir'), ...
         '%s must contain ctrlSig, distGivenDirSig, and uniqueR2Dir.', distCtrlPath);
     extraPool = find(D.ctrlSig & ~D.distGivenDirSig & isfinite(D.uniqueR2Dir) & isfinite(veLate));

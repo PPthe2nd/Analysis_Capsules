@@ -136,10 +136,7 @@ assert(all(stimNumsSorted(:).' == 1:numel(Tall_IT)), ...
 Tall_IT = Tall_IT(ordStim);
 nStim = numel(Tall_IT);
 
-Sresp = load(resp3binPath);
-assert(isfield(Sresp, 'R') && isstruct(Sresp.R), ...
-    '%s must contain struct R.', resp3binFile);
-R3_full = Sresp.R;
+R3_full = load_capsules_struct_exclusion_aware(resp3binPath, monkeySuffix, 'cfg', cfg);
 R3 = R3_full;
 R3.meanAct = R3_full.meanAct(RFrange, :, :);
 R3.meanSqAct = R3_full.meanSqAct(RFrange, :, :);
@@ -239,13 +236,12 @@ if pairParamsChanged || ~exist('PairColorEarly', 'var') || ~exist('PairColorLate
         end
     end
     if ~exist('nTrialsPairMat', 'var')
-        SrespPair = load(resp3binPath);
-        assert(isfield(SrespPair, 'R') && isstruct(SrespPair.R) && isfield(SrespPair.R, 'nTrials'), ...
-            '%s must contain R.nTrials.', resp3binFile);
-        if ismatrix(SrespPair.R.nTrials) && size(SrespPair.R.nTrials, 1) >= max(RFrange)
-            nTrialsPairMat = double(SrespPair.R.nTrials(RFrange, :));
+        Rpair = load_capsules_struct_exclusion_aware(resp3binPath, monkeySuffix, 'cfg', cfg);
+        assert(isfield(Rpair, 'nTrials'), '%s must contain R.nTrials.', resp3binFile);
+        if ismatrix(Rpair.nTrials) && size(Rpair.nTrials, 1) >= max(RFrange)
+            nTrialsPairMat = double(Rpair.nTrials(RFrange, :));
         else
-            nTrialsPairMat = repmat(double(SrespPair.R.nTrials(:)).', nIT, 1);
+            nTrialsPairMat = repmat(double(Rpair.nTrials(:)).', nIT, 1);
         end
     end
 

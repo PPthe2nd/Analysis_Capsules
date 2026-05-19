@@ -5,6 +5,7 @@ Monkey = 1; % 1 for Nilson, 2 for Figaro
 TabFile = "ObjAtt_lines_monkeyN_20220201_B1";
 cfg = config();
 LogDir = cfg.logsDir;
+hasSessionExclusions = ~isempty(site_session_exclusions("N"));
 
 load(fullfile(cfg.matDir, "Tall_V1_lines_N.mat")); % load the RF information for each of 384 stimuli
 
@@ -20,8 +21,7 @@ load(fullfile(cfg.matDir, "Tall_V1_lines_N.mat")); % load the RF information for
 % save the result in a mat file:
 % save('SNR_capsules_N_d12.mat', 'R', '-v7.3');
 
-load(fullfile(cfg.matDir, 'SNR_capsules_N_d12.mat'));   % days 1 and 2
-R_snr = R;
+R_snr = load_capsules_struct_exclusion_aware(fullfile(cfg.matDir, 'SNR_capsules_N_d12.mat'), "N", 'cfg', cfg);
 
 % The logic of day 1 and 2:
 % Stim 1 purple is target; Stim 6 same stimulus, but yellow is target; Stim 2 purple is target; Stim 5 same stimulus but yellow is target
@@ -36,9 +36,16 @@ R_snr = R;
 
 
 %% --> ComputeSNR_perColor; % determines the SNR in the two time windows.
-load(fullfile(cfg.matDir, 'SNR_V1_byColor_byWindow.mat'));
-SNRmat = [SNR.yellowEarly, SNR.yellowLate, SNR.purpleEarly, SNR.purpleLate];
+if hasSessionExclusions
+    fprintf('Session exclusions are active for monkey N; recomputing V1 SNR from exclusion-aware 3-bin responses.\n');
+    SNR = compute_snr_per_color_sites(R_snr, Tall_V1, (1:512).', 'Verbose', false);
+else
+    load(fullfile(cfg.matDir, 'SNR_V1_byColor_byWindow.mat'));
+end
+SNRmat = [SNR.yellowEarly(1:512), SNR.yellowLate(1:512), ...
+    SNR.purpleEarly(1:512), SNR.purpleLate(1:512)];
 [bestSNR, bestIdx] = max(SNRmat, [], 2, 'omitnan');
+bestSNR = bestSNR(:);
 
 x = bestSNR(isfinite(bestSNR));
 figure;
@@ -57,14 +64,20 @@ NminMatched = 20;       % minimum matched T/D trial weight for rescue
 pColorThr = 0.05;       % color significance threshold (color rescue)
 
 % TD modulation from 3-bin data (same as Attention_Line_Stimuli logic)
-Satt = load(fullfile(cfg.matDir, 'SNR_capsules_N_d12.mat'));  % loads R
-R3 = Satt.R;
+R3 = R_snr;
 optsTD = struct('timeIdx', 3, 'excludeOverlap', true, 'verbose', false);
 OUTtd = attention_modulation_V1_3bin(R3, Tall_V1, SNR, optsTD);
 
 % Color significance (purple vs yellow) from ColorTune
-Sct = load(fullfile(cfg.matDir, 'ColorTune_balanced_V1.mat'));  % loads ColorTune
-ColorTune = Sct.ColorTune;
+if exist(fullfile(cfg.matDir, 'ColorTune_balanced_V1.mat'), 'file') == 2 && ~hasSessionExclusions
+    Sct = load(fullfile(cfg.matDir, 'ColorTune_balanced_V1.mat'));  % loads ColorTune
+    ColorTune = Sct.ColorTune;
+else
+    keepSiteIdx = find(bestSNR > SNRthr);
+    ColorTune = compute_color_tuning_balanced_sites(R3, Tall_V1, (1:512).', keepSiteIdx, 'Verbose', false);
+    ColorTune.thr = SNRthr;
+    ColorTune.bestSNR = bestSNR;
+end
 isColorSig = isfinite(ColorTune.early.p(1:512)) & (ColorTune.early.p(1:512) < pColorThr);
 
 matchedN = OUTtd.wY + OUTtd.wP;
@@ -107,7 +120,14 @@ grid on;
 %% Color tuning
 % --> ColorTuning_Capsules; % determines the color tuning in the two time windows.
 if ~exist('ColorTune','var')
-    load(fullfile(cfg.matDir, 'ColorTune_balanced_V1.mat'));  % SNR threshold was 0.7
+    if exist(fullfile(cfg.matDir, 'ColorTune_balanced_V1.mat'), 'file') == 2 && ~hasSessionExclusions
+        load(fullfile(cfg.matDir, 'ColorTune_balanced_V1.mat'));  % SNR threshold was 0.7
+    else
+        keepSiteIdx = find(bestSNR > SNRthr);
+        ColorTune = compute_color_tuning_balanced_sites(R3, Tall_V1, (1:512).', keepSiteIdx, 'Verbose', false);
+        ColorTune.thr = SNRthr;
+        ColorTune.bestSNR = bestSNR;
+    end
 end
 
 % histogram with colour tuning
@@ -137,13 +157,13 @@ edges = -200:winSize:500;     % window edges
 % R.stimList  = stimList;R.timeWindows = timeWindowsResp;R.tb = tb;
 % R.file_m1 = m1;R.file_m2 = m2;
 % save('Resp_capsules_N_d12.mat', 'R', '-v7.3');
-load(fullfile(cfg.matDir, 'Resp_capsules_N_d12.mat'));
-R_resp = R;
+R_resp = load_capsules_struct_exclusion_aware(fullfile(cfg.matDir, 'Resp_capsules_N_d12.mat'), "N", 'cfg', cfg);
 
 % best vs worst color and grey with a minimal distance to a coloured pixel
 ciThr = 0.35;                 % abs(colorIndex) threshold for "color tuned"
 useColorIndexFrom = "early";   % "early" or "late"
 minDistThr = 30;              % px: include ONLY gray stimuli with distance >= minDistThr in pixels
+R = R_resp; %#ok<NASGU> % legacy workspace name expected by PSTH_colorPref_V1_grayDist
 PSTH_colorPref_V1_grayDist
 % PSTH_colorPref_V1;            % best vs worst color response for tuned
 % sites, no grey

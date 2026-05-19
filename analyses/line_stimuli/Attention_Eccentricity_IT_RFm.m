@@ -166,10 +166,7 @@ fprintf('Site inclusion mode: %s | kept %d / %d sites\n', ...
     selectionLabel, nnz(selectedMaskByIndex), nIT);
 assert(any(selectedMaskByIndex), 'No IT sites passed the selected inclusion gate.');
 
-S3 = load(resp3binPath);
-assert(isfield(S3, 'R') && isstruct(S3.R), ...
-    '%s must contain struct R.', resp3binFile);
-R3_full = S3.R;
+R3_full = load_capsules_struct_exclusion_aware(resp3binPath, monkeySuffix, 'cfg', cfg);
 R3dec = R3_full;
 R3dec.meanAct = R3_full.meanAct(RFrange, :, :);
 R3dec.meanSqAct = R3_full.meanSqAct(RFrange, :, :);

@@ -1,4 +1,4 @@
-function OUT = Attention_TargetSide_Tuning_IT()
+function OUT = Attention_TargetSide_Tuning_IT(Puser)
 % ATTENTION_TARGETSIDE_TUNING_IT
 % Fit IT tuning to the screen direction of the attended capsule relative to
 % the unattended capsule.
@@ -43,6 +43,13 @@ P.vePlotFloorPct = -100;
 P.sigAlpha = 0.05;
 P.varFloorFrac = 1e-3;
 
+if nargin >= 1 && ~isempty(Puser)
+    fn = fieldnames(Puser);
+    for i = 1:numel(fn)
+        P.(fn{i}) = Puser.(fn{i});
+    end
+end
+
 cfg = config();
 
 %% Monkey-specific files
@@ -62,6 +69,8 @@ end
 tallPath = fullfile(cfg.matDir, tallFile);
 resp3binPath = fullfile(cfg.matDir, resp3binFile);
 outPath = fullfile(cfg.matDir, sprintf('Attention_TargetSide_Tuning_IT_directiondelta_%s.mat', char(monkeySuffix)));
+currentExclusions = site_session_exclusions(monkeySuffix);
+hasSessionExclusions = ~isempty(currentExclusions);
 
 assert(exist(tallPath, 'file') == 2, ...
     'Missing %s. Run Line_Stimuli_IT.m first.', tallPath);
@@ -69,11 +78,23 @@ assert(exist(resp3binPath, 'file') == 2, ...
     'Missing %s. Create the 3-bin response summary first.', resp3binPath);
 
 useCached = exist(outPath, 'file') == 2 && ~P.forceRefit;
-needsSave = ~useCached;
+needsSave = true;
+
+if useCached
+    S = load(outPath);
+    if ~session_exclusion_cache_matches(S, monkeySuffix)
+        useCached = false;
+        if hasSessionExclusions
+            fprintf(['Cached IT target-side tuning does not match the active session exclusions ' ...
+                     'for monkey %s; recomputing.\n'], char(monkeySuffix));
+        else
+            fprintf('Cached IT target-side tuning is from an exclusion-aware run; recomputing canonical cache.\n');
+        end
+    end
+end
 
 if useCached
     fprintf('Loading cached IT target-side tuning from %s\n', outPath);
-    S = load(outPath);
     assert(isfield(S, 'OUT') && isstruct(S.OUT), ...
         '%s must contain struct OUT.', outPath);
     OUT = S.OUT;
@@ -92,7 +113,12 @@ if useCached
     varQuartetLate = OUT.varQuartetLate;
     RFrange = OUT.RFrange(:);
     nIT = numel(RFrange);
+    needsSave = false;
 else
+    if hasSessionExclusions
+        fprintf(['Session exclusions are active for monkey %s; recomputing cached IT ' ...
+                 'target-side tuning.\n'], char(monkeySuffix));
+    end
     %% Load geometry
     Sgeo = load(tallPath);
     assert(isfield(Sgeo, 'Tall_IT') && isstruct(Sgeo.Tall_IT), ...
@@ -122,11 +148,7 @@ else
         'VariableNames', {'quartetIdx','stimRef','pairMidX','pairMidY','targetDirDeg'});
 
     %% Load 3-bin responses and localize to IT rows
-    Sresp = load(resp3binPath);
-    assert(isfield(Sresp, 'R') && isstruct(Sresp.R), ...
-        '%s must contain struct R.', resp3binFile);
-
-    R3_full = Sresp.R;
+    R3_full = load_capsules_struct_exclusion_aware(resp3binPath, monkeySuffix, 'cfg', cfg);
     R3 = R3_full;
     R3.meanAct = R3_full.meanAct(RFrange, :, :);
     R3.meanSqAct = R3_full.meanSqAct(RFrange, :, :);
@@ -267,6 +289,7 @@ OUT.isDirectionTunedEarly = isDirEarly;
 OUT.isDirectionTunedLate = isDirLate;
 OUT.TableEarly = Tearly;
 OUT.TableLate = Tlate;
+OUT.siteSessionExclusions = currentExclusions;
 
 if needsSave && P.saveResult
     save(outPath, 'OUT', '-v7.3');

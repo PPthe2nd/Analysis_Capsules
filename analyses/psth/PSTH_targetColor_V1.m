@@ -25,16 +25,11 @@ assert(exist(resp3binPath, 'file') == 2, ...
     'Missing %s. Need the 3-bin response summary for gating/selection.', resp3binPath);
 
 Sgeo = load(tallPath);
-Sresp = load(respPath, 'R');
-Sresp3 = load(resp3binPath, 'R');
+R_full = load_capsules_struct_exclusion_aware(respPath, "N", 'cfg', cfg);
+R3_full = load_capsules_struct_exclusion_aware(resp3binPath, "N", 'cfg', cfg);
 
 assert(isfield(Sgeo, 'Tall_V1') && isstruct(Sgeo.Tall_V1), ...
     '%s must contain Tall_V1.', tallPath);
-assert(isfield(Sresp, 'R') && isstruct(Sresp.R), ...
-    '%s must contain struct R.', respPath);
-assert(isfield(Sresp3, 'R') && isstruct(Sresp3.R), ...
-    '%s must contain struct R.', resp3binPath);
-
 Tall_V1 = Sgeo.Tall_V1;
 if isfield(Sgeo, 'RTAB384')
     RTAB384 = Sgeo.RTAB384;
@@ -50,8 +45,8 @@ end
 v1Sites = (1:512).';
 nV1 = numel(v1Sites);
 
-R_resp = localize_response_rows_local(Sresp.R, v1Sites);
-R3 = localize_response_rows_local(Sresp3.R, v1Sites);
+R_resp = localize_response_rows_local(R_full, v1Sites);
+R3 = localize_response_rows_local(R3_full, v1Sites);
 
 [nCh, nStim, nBins] = size(R_resp.meanAct);
 assert(nCh == nV1, 'Localized V1 response struct should have 512 rows.');

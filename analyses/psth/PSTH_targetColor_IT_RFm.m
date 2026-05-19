@@ -51,26 +51,19 @@ assert(exist(resp3binPath, 'file') == 2, ...
     'Missing %s. Need the 3-bin IT response summary for gating/selection.', resp3binPath);
 
 Sgeo = load(tallPath);
-Sresp = load(respPath, 'R');
-Sresp3 = load(resp3binPath, 'R');
 
 assert(isfield(Sgeo, 'Tall_IT') && isstruct(Sgeo.Tall_IT) && ...
        isfield(Sgeo, 'RFrange') && ~isempty(Sgeo.RFrange) && ...
        isfield(Sgeo, 'RTAB384'), ...
     '%s must contain Tall_IT, RFrange, and RTAB384.', tallPath);
-assert(isfield(Sresp, 'R') && isstruct(Sresp.R), ...
-    '%s must contain struct R.', respPath);
-assert(isfield(Sresp3, 'R') && isstruct(Sresp3.R), ...
-    '%s must contain struct R.', resp3binPath);
-
 Tall_IT = Sgeo.Tall_IT;
 RFrange = Sgeo.RFrange(:);
 RTAB384 = Sgeo.RTAB384;
 nIT = numel(RFrange);
 siteRows = (1:nIT).';
 
-R_full = Sresp.R;
-R3_full = Sresp3.R;
+R_full = load_capsules_struct_exclusion_aware(respPath, monkeySuffix, 'cfg', cfg);
+R3_full = load_capsules_struct_exclusion_aware(resp3binPath, monkeySuffix, 'cfg', cfg);
 R_resp = localize_response_rows_local(R_full, RFrange);
 R3 = localize_response_rows_local(R3_full, RFrange);
 

@@ -116,10 +116,7 @@ RFrange = Sgeo.RFrange(:);
 nV4 = numel(RFrange);
 siteRows = (1:nV4).';
 
-S3 = load(resp3binPath);
-assert(isfield(S3, 'R') && isstruct(S3.R), ...
-    '%s must contain struct R.', resp3binFile);
-R3_full = S3.R;
+R3_full = load_capsules_struct_exclusion_aware(resp3binPath, monkeySuffix, 'cfg', cfg);
 R3dec = R3_full;
 R3dec.meanAct = R3_full.meanAct(RFrange, :, :);
 R3dec.meanSqAct = R3_full.meanSqAct(RFrange, :, :);
@@ -218,10 +215,7 @@ if UseSiteWeights
     end
 end
 
-Sm = load(respMoviePath);
-assert(isfield(Sm, 'R') && isstruct(Sm.R), ...
-    '%s must contain struct R.', respMovieFile);
-Rmovie_full = Sm.R;
+Rmovie_full = load_capsules_struct_exclusion_aware(respMoviePath, monkeySuffix, 'cfg', cfg);
 Rmovie = Rmovie_full;
 Rmovie.meanAct = Rmovie_full.meanAct(RFrange, :, :);
 Rmovie.meanSqAct = Rmovie_full.meanSqAct(RFrange, :, :);

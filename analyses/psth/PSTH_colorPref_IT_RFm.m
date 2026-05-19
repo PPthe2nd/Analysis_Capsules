@@ -41,19 +41,15 @@ assert(exist(respPath, 'file') == 2, ...
 
 Sgeo = load(tallPath);
 Sct = load(colorTunePath, 'ColorTune');
-Sresp = load(respPath, 'R');
 
 assert(isfield(Sgeo, 'Tall_IT') && isstruct(Sgeo.Tall_IT) && isfield(Sgeo, 'RFrange'), ...
     '%s must contain Tall_IT and RFrange.', tallPath);
 assert(isfield(Sct, 'ColorTune') && isstruct(Sct.ColorTune), ...
     '%s must contain ColorTune.', colorTunePath);
-assert(isfield(Sresp, 'R') && isstruct(Sresp.R), ...
-    '%s must contain struct R.', respPath);
-
 Tall_IT = Sgeo.Tall_IT;
 RFrange = Sgeo.RFrange(:);
 ColorTune = Sct.ColorTune;
-R_full = Sresp.R;
+R_full = load_capsules_struct_exclusion_aware(respPath, monkeySuffix, 'cfg', cfg);
 nIT = numel(RFrange);
 
 assert(isfield(ColorTune, Opts.Window), ...

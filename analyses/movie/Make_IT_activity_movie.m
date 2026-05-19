@@ -93,10 +93,7 @@ nObjectStim = nTargetStim + nDistrStim;
 hasObjectRF = nObjectStim >= MinObjectStim;
 
 % 3-bin responses for site screening and normalization.
-S3 = load(resp3binPath);
-assert(isfield(S3, 'R') && isstruct(S3.R), ...
-    '%s must contain struct R.', resp3binFile);
-R3_full = S3.R;
+R3_full = load_capsules_struct_exclusion_aware(resp3binPath, monkeySuffix, 'cfg', cfg);
 R3 = R3_full;
 R3.meanAct = R3_full.meanAct(RFrange, :, :);
 R3.meanSqAct = R3_full.meanSqAct(RFrange, :, :);

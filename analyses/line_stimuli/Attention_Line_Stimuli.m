@@ -141,6 +141,7 @@ end
 %% Required context
 cfg = config();
 TabFile = 'ObjAtt_lines_monkeyN_20220201_B1';
+hasSessionExclusions = ~isempty(site_session_exclusions("N"));
 
 Sgeo = load(fullfile(cfg.logsDir, TabFile));
 assert(isfield(Sgeo, 'ALLCOORDS'), ...
@@ -161,16 +162,19 @@ Tall_V1 = S.Tall_V1;
 clear R_resp OUT_postAffine GGROUP FITS FITG OUTTarget OUTPre
 
 %% Load 3-bin response + normalization and get baseline OUT3
-S = load(fullfile(cfg.matDir, 'SNR_capsules_N_d12.mat'));   % loads R
-assert(isfield(S, 'R') && isstruct(S.R), 'SNR_capsules_N_d12.mat must contain struct R.');
-R3 = S.R;
+R3 = load_capsules_struct_exclusion_aware(fullfile(cfg.matDir, 'SNR_capsules_N_d12.mat'), "N", 'cfg', cfg);
 assert(isfield(R3, 'timeWindows') && size(R3.timeWindows,1) == 3, ...
     'Expected 3 time windows in SNR_capsules_N_d12.mat.');
 
-S = load(fullfile(cfg.matDir, 'SNR_V1_byColor_byWindow.mat')); % loads SNR
-assert(isfield(S, 'SNR') && isstruct(S.SNR) && isfield(S.SNR, 'muSpont'), ...
-    'SNR_V1_byColor_byWindow.mat must contain normalization struct SNR.');
-SNRnorm = S.SNR;
+if hasSessionExclusions
+    fprintf('Session exclusions are active for monkey N; recomputing V1 normalization from exclusion-aware 3-bin responses.\n');
+    SNRnorm = compute_snr_per_color_sites(R3, Tall_V1, (1:512).', 'Verbose', false);
+else
+    S = load(fullfile(cfg.matDir, 'SNR_V1_byColor_byWindow.mat')); % loads SNR
+    assert(isfield(S, 'SNR') && isstruct(S.SNR) && isfield(S.SNR, 'muSpont'), ...
+        'SNR_V1_byColor_byWindow.mat must contain normalization struct SNR.');
+    SNRnorm = S.SNR;
+end
 
 saveTag = 'OUT_attention_modulation_3bin_timeIdx3';
 outFile = fullfile(cfg.resultsDir, [saveTag '.mat']);
@@ -313,10 +317,7 @@ end
 
 %% Load high-resolution response windows
 if RUN_QC || RUN_POST_AFFINE_VALUES || RUN_STILLS || RUN_MOVIE || RUN_GROUP_POLYGON_PREP || RUN_GROUP_POLYGON_STILLS || RUN_GROUP_POLYGON_MOVIE
-    S = load(fullfile(cfg.matDir, P.respCapsulesFile));  % loads R
-    assert(isfield(S, 'R') && isstruct(S.R), ...
-        '%s must contain struct R.', P.respCapsulesFile);
-    R_resp = S.R;
+    R_resp = load_capsules_struct_exclusion_aware(fullfile(cfg.matDir, P.respCapsulesFile), "N", 'cfg', cfg);
 
     assert(isfield(R_resp, 'timeWindows') && size(R_resp.timeWindows,2) == 2, ...
         '%s must contain R.timeWindows as [nWindows x 2].', P.respCapsulesFile);

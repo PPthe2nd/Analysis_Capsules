@@ -84,11 +84,7 @@ fprintf('Median #object assignments per V4 site: %.1f\n', median(nObjectStim));
 fprintf('Median #overlap assignments per V4 site: %.1f\n', median(nOverlapStim));
 
 % Load 3-bin response moments and localize them to the V4 rows used in Tall_V4.
-Sresp = load(resp3binPath);
-assert(isfield(Sresp, 'R') && isstruct(Sresp.R), ...
-    '%s must contain struct R.', resp3binFile);
-
-R3_full = Sresp.R;
+R3_full = load_capsules_struct_exclusion_aware(resp3binPath, monkeySuffix, 'cfg', cfg);
 R3 = R3_full;
 R3.meanAct = R3_full.meanAct(RFrange, :, :);
 R3.meanSqAct = R3_full.meanSqAct(RFrange, :, :);

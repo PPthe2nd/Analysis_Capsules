@@ -48,9 +48,19 @@ cfg = config();
 legacyColorTunePath = fullfile(cfg.matDir, 'ColorTune_balanced_V1.mat');
 loadedLegacyColorTune = false;
 
-nStim = numel(R.nTrials);
-nTrials = double(R.nTrials(:));
+nStim = size(R.meanAct, 2);
 assert(nStim == 384, 'Expected 384 stimuli.');
+
+nTrialsRaw = double(R.nTrials);
+if isvector(nTrialsRaw)
+    nTrials = nTrialsRaw(:);
+    perSiteTrials = false;
+elseif ismatrix(nTrialsRaw) && size(nTrialsRaw,2) == nStim
+    nTrials = [];
+    perSiteTrials = true;
+else
+    error('R.nTrials must be a stimulus vector or a site-by-stimulus matrix.');
+end
 
 % -----------------------
 % Sort Tall_V1 by stimNum (safety)
@@ -137,6 +147,12 @@ if ~loadedLegacyColorTune
     for iSite = keepSites(:).'
         s = v1RowsInR(iSite); % row in R
 
+        if perSiteTrials
+            nTrSite = double(nTrialsRaw(s,:)).';
+        else
+            nTrSite = nTrials;
+        end
+
         % Pre-fetch responses for speed
         mEarly  = squeeze(R.meanAct(s,:,WIN_EARLY)).';   % [384 x 1]
         msqEarly= squeeze(R.meanSqAct(s,:,WIN_EARLY)).'; % [384 x 1]
@@ -155,8 +171,8 @@ if ~loadedLegacyColorTune
             a = pairsA(ip);
             b = pairsB(ip);
 
-            na = nTrials(a);
-            nb = nTrials(b);
+            na = nTrSite(a);
+            nb = nTrSite(b);
             nEff = min(na, nb);
 
             if nEff <= 0

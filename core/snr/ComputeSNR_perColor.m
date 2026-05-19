@@ -20,11 +20,20 @@ useBesselCorrection = true;
 % -----------------------
 % BASIC CHECKS
 % -----------------------
-nTrials = double(R.nTrials(:));
-nStim = numel(nTrials);
+nStim = size(R.meanAct, 2);
+nTrialsRaw = double(R.nTrials);
+if isvector(nTrialsRaw)
+    nTrials = nTrialsRaw(:);
+    perSiteTrials = false;
+elseif ismatrix(nTrialsRaw) && size(nTrialsRaw,2) == nStim
+    nTrials = [];
+    perSiteTrials = true;
+else
+    error('R.nTrials must be a stimulus vector or a site-by-stimulus matrix.');
+end
 
 [nSitesTotal, nStim2, nWin] = size(R.meanAct);
-assert(nStim2 == nStim, 'R.meanAct second dim (%d) != numel(R.nTrials) (%d).', nStim2, nStim);
+assert(nStim2 == nStim, 'R.meanAct second dim (%d) != stimulus count (%d).', nStim2, nStim);
 assert(all(size(R.meanSqAct) == size(R.meanAct)), 'R.meanSqAct must match size of R.meanAct.');
 assert(nWin >= 3, 'Expected >=3 windows.');
 assert(nSitesTotal >= 512, 'R.meanAct has only %d sites (<512).', nSitesTotal);
@@ -40,8 +49,6 @@ TallSorted = Tall_V1(order);
 T0 = TallSorted(1).T;
 assert(istable(T0), 'Tall_V1(stim).T must be a table.');
 assert(all(size(T0) == [512 19]), 'Expected T to be 512x18, got %s.', mat2str(size(T0)));
-
-stimOk = (nTrials >= minTrialsPerStim);
 
 nSites = numel(v1Sites); % 512
 
@@ -68,20 +75,26 @@ nPurpleTrials = zeros(nSites,1);
 % -----------------------
 for i = 1:nSites
     s = v1Sites(i);
+    if perSiteTrials
+        nTrSite = double(nTrialsRaw(s,:)).';
+    else
+        nTrSite = nTrials;
+    end
+    stimOk = (nTrSite >= minTrialsPerStim);
 
     mu_i  = squeeze(R.meanAct(s,:,WIN_SPONT)).';    % [nStim x 1]
     msq_i = squeeze(R.meanSqAct(s,:,WIN_SPONT)).';  % [nStim x 1]
 
     valid = stimOk & isfinite(mu_i) & isfinite(msq_i);
 
-    N = sum(nTrials(valid));
+    N = sum(nTrSite(valid));
     nSpontTotal(i) = N;
     if N <= 1, continue; end
 
-    mu = sum(nTrials(valid) .* mu_i(valid)) / N;
+    mu = sum(nTrSite(valid) .* mu_i(valid)) / N;
     muSpont(i) = mu;
 
-    Ex2 = sum(nTrials(valid) .* msq_i(valid)) / N;
+    Ex2 = sum(nTrSite(valid) .* msq_i(valid)) / N;
     varPop = max(0, Ex2 - mu^2);
 
     if useBesselCorrection
@@ -123,24 +136,30 @@ end
 % -----------------------
 for i = 1:nSites
     s = v1Sites(i);
+    if perSiteTrials
+        nTrSite = double(nTrialsRaw(s,:)).';
+    else
+        nTrSite = nTrials;
+    end
+    stimOk = (nTrSite >= minTrialsPerStim);
 
     rEarly = squeeze(R.meanAct(s,:,WIN_EARLY)).';  % [nStim x 1]
     rLate  = squeeze(R.meanAct(s,:,WIN_LATE)).';
 
     idxY = stimOk & isYellow(i,:).';
-    NY = sum(nTrials(idxY));
+    NY = sum(nTrSite(idxY));
     nYellowTrials(i) = NY;
     if NY >= minTotalTrialsPerColor
-        muYellowEarly(i) = sum(nTrials(idxY) .* rEarly(idxY)) / NY;
-        muYellowLate(i)  = sum(nTrials(idxY) .* rLate(idxY))  / NY;
+        muYellowEarly(i) = sum(nTrSite(idxY) .* rEarly(idxY)) / NY;
+        muYellowLate(i)  = sum(nTrSite(idxY) .* rLate(idxY))  / NY;
     end
 
     idxP = stimOk & isPurple(i,:).';
-    NP = sum(nTrials(idxP));
+    NP = sum(nTrSite(idxP));
     nPurpleTrials(i) = NP;
     if NP >= minTotalTrialsPerColor
-        muPurpleEarly(i) = sum(nTrials(idxP) .* rEarly(idxP)) / NP;
-        muPurpleLate(i)  = sum(nTrials(idxP) .* rLate(idxP))  / NP;
+        muPurpleEarly(i) = sum(nTrSite(idxP) .* rEarly(idxP)) / NP;
+        muPurpleLate(i)  = sum(nTrSite(idxP) .* rLate(idxP))  / NP;
     end
 end
 

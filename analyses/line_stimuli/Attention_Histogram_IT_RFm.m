@@ -53,11 +53,7 @@ assert(all(stimNumsSorted(:).' == 1:numel(Tall_IT)), ...
 Tall_IT = Tall_IT(ordStim);
 nStim = numel(Tall_IT);
 
-Sresp = load(resp3binPath);
-assert(isfield(Sresp, 'R') && isstruct(Sresp.R), ...
-    '%s must contain struct R.', resp3binFile);
-
-R3_full = Sresp.R;
+R3_full = load_capsules_struct_exclusion_aware(resp3binPath, monkeySuffix, 'cfg', cfg);
 R3 = localize_response_rows_local(R3_full, RFrange);
 assert(size(R3.meanAct,1) == nIT, 'Localized IT response rows do not match Tall_IT.');
 assert(size(R3.meanAct,2) == nStim, 'Localized IT response stimuli do not match Tall_IT.');

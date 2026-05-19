@@ -42,19 +42,15 @@ assert(exist(respPath, 'file') == 2, ...
 
 Sg = load(gaussPath, 'OUT');
 Sgeo = load(tallBasePath, 'ALLCOORDS', 'RTAB384');
-Sresp = load(respPath, 'R');
 
 assert(isfield(Sg, 'OUT') && isstruct(Sg.OUT), ...
     '%s must contain struct OUT.', gaussPath);
 assert(isfield(Sgeo, 'ALLCOORDS') && isfield(Sgeo, 'RTAB384'), ...
     '%s must contain ALLCOORDS and RTAB384.', tallBasePath);
-assert(isfield(Sresp, 'R') && isstruct(Sresp.R), ...
-    '%s must contain struct R.', respPath);
-
 GOUT = Sg.OUT;
 ALLCOORDS = Sgeo.ALLCOORDS;
 RTAB384 = Sgeo.RTAB384;
-R_full = Sresp.R;
+R_full = load_capsules_struct_exclusion_aware(respPath, monkeySuffix, 'cfg', cfg);
 
 assert(isfield(GOUT, 'FitSpatialEarly') && isfield(GOUT, 'PairColorEarly') && isfield(GOUT, 'RFrange'), ...
     '%s must contain FitSpatialEarly, PairColorEarly, and RFrange.', gaussFile);

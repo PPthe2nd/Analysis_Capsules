@@ -1,4 +1,4 @@
-function OUT = Attention_TargetSide_DistanceControl_IT()
+function OUT = Attention_TargetSide_DistanceControl_IT(Puser)
 % ATTENTION_TARGETSIDE_DISTANCECONTROL_IT
 % Test whether the IT target-direction effect survives after accounting for
 % RF proximity to the target versus distractor arm.
@@ -25,6 +25,13 @@ P.forceRefit = false;
 P.sigAlpha = 0.05;
 P.varFloorFrac = 1e-3;
 
+if nargin >= 1 && ~isempty(Puser)
+    fn = fieldnames(Puser);
+    for i = 1:numel(fn)
+        P.(fn{i}) = Puser.(fn{i});
+    end
+end
+
 cfg = config();
 
 if P.Monkey == 1
@@ -41,39 +48,60 @@ end
 basePath = fullfile(cfg.matDir, sprintf('Attention_TargetSide_Tuning_IT_directiondelta_%s.mat', char(monkeySuffix)));
 tallPath = fullfile(cfg.matDir, tallFile);
 outPath = fullfile(cfg.matDir, sprintf('Attention_TargetSide_DistanceControl_IT_%s.mat', char(monkeySuffix)));
+currentExclusions = site_session_exclusions(monkeySuffix);
+hasSessionExclusions = ~isempty(currentExclusions);
 
-assert(exist(basePath, 'file') == 2, ...
-    'Missing %s. Run Attention_TargetSide_Tuning_IT first.', basePath);
 assert(exist(tallPath, 'file') == 2, ...
     'Missing %s. Run Line_Stimuli_IT first.', tallPath);
 
 useCached = exist(outPath, 'file') == 2 && ~P.forceRefit;
 if useCached
-    fprintf('Loading cached IT distance-control analysis from %s\n', outPath);
     S = load(outPath, 'OUT');
-    assert(isfield(S, 'OUT') && isstruct(S.OUT), '%s must contain OUT.', outPath);
-    requiredCached = {'intPLate','intSig','distGivenDirPLate','uniqueR2Dir','uniqueR2Dist','sharedR2Additive','totalR2Additive','totalR2Interaction','RegressionLate'};
-    hasNewFields = all(isfield(S.OUT, requiredCached));
-    if hasNewFields
-        Rtmp = S.OUT.RegressionLate;
-        hasNewFields = ~isempty(Rtmp) && isfield(Rtmp, 'pInteraction') && ...
-            isfield(Rtmp, 'partialR2Interaction') && isfield(Rtmp, 'pDistGivenDir') && ...
-            isfield(Rtmp, 'uniqueR2Dir') && isfield(Rtmp, 'uniqueR2Dist') && isfield(Rtmp, 'sharedR2Additive');
-    end
-    if hasNewFields
-        OUT = S.OUT;
-        if P.makeSummaryFigure
-            make_summary_figure(OUT);
+    if ~session_exclusion_cache_matches(S, monkeySuffix)
+        useCached = false;
+        if hasSessionExclusions
+            fprintf(['Cached IT distance-control analysis does not match the active session exclusions ' ...
+                     'for monkey %s; recomputing.\n'], char(monkeySuffix));
+        else
+            fprintf('Cached IT distance-control analysis is from an exclusion-aware run; recomputing canonical cache.\n');
         end
-        return;
+    else
+        fprintf('Loading cached IT distance-control analysis from %s\n', outPath);
+        assert(isfield(S, 'OUT') && isstruct(S.OUT), '%s must contain OUT.', outPath);
+        requiredCached = {'intPLate','intSig','distGivenDirPLate','uniqueR2Dir','uniqueR2Dist','sharedR2Additive','totalR2Additive','totalR2Interaction','RegressionLate'};
+        hasNewFields = all(isfield(S.OUT, requiredCached));
+        if hasNewFields
+            Rtmp = S.OUT.RegressionLate;
+            hasNewFields = ~isempty(Rtmp) && isfield(Rtmp, 'pInteraction') && ...
+                isfield(Rtmp, 'partialR2Interaction') && isfield(Rtmp, 'pDistGivenDir') && ...
+                isfield(Rtmp, 'uniqueR2Dir') && isfield(Rtmp, 'uniqueR2Dist') && isfield(Rtmp, 'sharedR2Additive');
+        end
+        if hasNewFields
+            OUT = S.OUT;
+            if P.makeSummaryFigure
+                make_summary_figure(OUT);
+            end
+            return;
+        end
+        fprintf('Cached result is missing interaction fields; recomputing.\n');
     end
-    fprintf('Cached result is missing interaction fields; recomputing.\n');
 end
 
 %% Load base analysis
-Sbase = load(basePath, 'OUT');
-assert(isfield(Sbase, 'OUT') && isstruct(Sbase.OUT), '%s must contain OUT.', basePath);
-BASE = Sbase.OUT;
+if hasSessionExclusions
+    fprintf(['Session exclusions are active for monkey %s; refreshing IT target-side ' ...
+             'fits before distance-control regression.\n'], char(monkeySuffix));
+    BASE = Attention_TargetSide_Tuning_IT(struct( ...
+        'makeSummaryFigures', false, ...
+        'makeExampleFigures', false, ...
+        'makeAngleReferenceFigure', false));
+else
+    assert(exist(basePath, 'file') == 2, ...
+        'Missing %s. Run Attention_TargetSide_Tuning_IT first.', basePath);
+    Sbase = load(basePath, 'OUT');
+    assert(isfield(Sbase, 'OUT') && isstruct(Sbase.OUT), '%s must contain OUT.', basePath);
+    BASE = Sbase.OUT;
+end
 requiredBase = {'QuartetTable','deltaQuartetLate','varQuartetLate','FitLate','RFrange'};
 for i = 1:numel(requiredBase)
     assert(isfield(BASE, requiredBase{i}), 'Base OUT is missing field %s.', requiredBase{i});
@@ -212,6 +240,7 @@ OUT.ctrlSig = ctrlSig;
 OUT.distSig = distSig;
 OUT.distGivenDirSig = distGivenDirSig;
 OUT.intSig = intSig;
+OUT.siteSessionExclusions = currentExclusions;
 
 if P.saveResult
     save(outPath, 'OUT', '-v7.3');

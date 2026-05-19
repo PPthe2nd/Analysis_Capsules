@@ -44,11 +44,7 @@ RFrange = Sgeo.RFrange(:);
 nIT = numel(RFrange);
 siteRows = (1:nIT).';
 
-Sresp = load(resp3binPath);
-assert(isfield(Sresp, 'R') && isstruct(Sresp.R), ...
-    '%s must contain struct R.', resp3binFile);
-
-R3_full = Sresp.R;
+R3_full = load_capsules_struct_exclusion_aware(resp3binPath, monkeySuffix, 'cfg', cfg);
 R3 = R3_full;
 R3.meanAct = R3_full.meanAct(RFrange, :, :);
 R3.meanSqAct = R3_full.meanSqAct(RFrange, :, :);

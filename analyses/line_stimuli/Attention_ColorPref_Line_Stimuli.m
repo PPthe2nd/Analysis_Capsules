@@ -26,6 +26,7 @@ P.excludeOverlap = true;
 P.colorTuneFile = 'ColorTune_balanced_V1.mat';
 P.colorTuneWindow = 'early';      % 'early' or 'late'
 P.pColorThresh = 0.05;
+P.colorTuneSNRthr = 0.7;
 
 P.snrNormFile = 'SNR_V1_byColor_byWindow.mat';
 P.v1Sites = 1:512;
@@ -42,6 +43,7 @@ P.interactionTest = 'signrank';  % 'signrank' or 'ttest'
 P.interactionFdr = true;         % Benjamini-Hochberg over bins
 
 cfg = config();
+hasSessionExclusions = ~isempty(site_session_exclusions("N"));
 
 %% Load required data
 S = load(fullfile(cfg.matDir, 'Tall_V1_lines_N.mat'));
@@ -49,40 +51,45 @@ assert(isfield(S, 'Tall_V1') && isstruct(S.Tall_V1), ...
     'Tall_V1_lines_N.mat must contain struct Tall_V1.');
 Tall_V1 = S.Tall_V1;
 
-S = load(fullfile(cfg.matDir, P.respCapsulesFile));
-assert(isfield(S, 'R') && isstruct(S.R), '%s must contain struct R.', P.respCapsulesFile);
-R_resp = S.R;
+respPath = fullfile(cfg.matDir, P.respCapsulesFile);
+resp3binPath = fullfile(cfg.matDir, P.attention3binFile);
+R_resp = load_capsules_struct_exclusion_aware(respPath, "N", 'cfg', cfg);
 assert(all(isfield(R_resp, {'meanAct','nTrials','timeWindows'})), ...
     'R_resp must contain meanAct, nTrials, timeWindows.');
-
-S = load(fullfile(cfg.matDir, P.colorTuneFile));
-assert(isfield(S, 'ColorTune') && isstruct(S.ColorTune), ...
-    '%s must contain struct ColorTune.', P.colorTuneFile);
-ColorTune = S.ColorTune;
+R3 = load_capsules_struct_exclusion_aware(resp3binPath, "N", 'cfg', cfg);
+SNR = compute_snr_per_color_sites(R3, Tall_V1, (1:512).', 'Verbose', false);
+if exist(fullfile(cfg.matDir, P.colorTuneFile), 'file') == 2 && ~hasSessionExclusions
+    S = load(fullfile(cfg.matDir, P.colorTuneFile));
+    assert(isfield(S, 'ColorTune') && isstruct(S.ColorTune), ...
+        '%s must contain struct ColorTune.', P.colorTuneFile);
+    ColorTune = S.ColorTune;
+else
+    SNRmat3 = [SNR.yellowEarly(1:512), SNR.yellowLate(1:512), ...
+               SNR.purpleEarly(1:512), SNR.purpleLate(1:512)];
+    bestSNR3 = max(SNRmat3, [], 2, 'omitnan');
+    keepSiteIdx3 = find(isfinite(bestSNR3) & (bestSNR3 > P.colorTuneSNRthr));
+    ColorTune = compute_color_tuning_balanced_sites(R3, Tall_V1, (1:512).', keepSiteIdx3, 'Verbose', false);
+    ColorTune.thr = P.colorTuneSNRthr;
+    ColorTune.bestSNR = bestSNR3;
+end
 assert(isfield(ColorTune, P.colorTuneWindow), ...
     'ColorTune missing window "%s".', P.colorTuneWindow);
 
-S = load(fullfile(cfg.matDir, P.snrNormFile));
-assert(isfield(S, 'SNR') && isstruct(S.SNR), '%s must contain struct SNR.', P.snrNormFile);
-SNR = S.SNR;
-
 %% Load or compute attention baseline OUT3 (used only for significance mask)
 out3File = fullfile(cfg.resultsDir, 'OUT_attention_modulation_3bin_timeIdx3.mat');
-if exist(out3File, 'file') == 2
+if exist(out3File, 'file') == 2 && ~hasSessionExclusions
     S = load(out3File, 'OUT');
     assert(isfield(S, 'OUT') && isstruct(S.OUT), ...
         'File %s must contain struct OUT.', out3File);
     OUT3 = S.OUT;
 else
-    S = load(fullfile(cfg.matDir, P.attention3binFile));
-    assert(isfield(S, 'R') && isstruct(S.R), ...
-        '%s must contain struct R.', P.attention3binFile);
-    R3 = S.R;
     optsTD = struct('timeIdx', P.attentionTimeIdx, 'excludeOverlap', P.excludeOverlap, 'verbose', true);
     OUT3 = attention_modulation_V1_3bin(R3, Tall_V1, SNR, optsTD);
     OUT = OUT3; %#ok<NASGU>
     meta = struct('created', datestr(now, 30), 'timeIdx', P.attentionTimeIdx); %#ok<NASGU>
-    save(out3File, 'OUT', 'meta', '-v7.3');
+    if ~hasSessionExclusions
+        save(out3File, 'OUT', 'meta', '-v7.3');
+    end
 end
 
 %% Basic dimensions and site indexing

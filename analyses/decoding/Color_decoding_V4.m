@@ -62,11 +62,9 @@ Tall_V4 = Sgeo.Tall_V4;
 RFrange = Sgeo.RFrange(:);
 nV4 = numel(RFrange);
 siteRows = (1:nV4).';
+hasSessionExclusions = ~isempty(site_session_exclusions(monkeySuffix));
 
-Sresp = load(respPath);
-assert(isfield(Sresp, 'R') && isstruct(Sresp.R), ...
-    '%s must contain struct R.', respFile);
-R_full = Sresp.R;
+R_full = load_capsules_struct_exclusion_aware(respPath, monkeySuffix, 'cfg', cfg);
 Rdec = R_full;
 Rdec.meanAct = R_full.meanAct(RFrange, :, :);
 Rdec.meanSqAct = R_full.meanSqAct(RFrange, :, :);
@@ -76,10 +74,7 @@ else
     Rdec.nTrials = R_full.nTrials;
 end
 
-Sresp3 = load(resp3binPath);
-assert(isfield(Sresp3, 'R') && isstruct(Sresp3.R), ...
-    '%s must contain struct R.', resp3binFile);
-R3_full = Sresp3.R;
+R3_full = load_capsules_struct_exclusion_aware(resp3binPath, monkeySuffix, 'cfg', cfg);
 R3dec = R3_full;
 R3dec.meanAct = R3_full.meanAct(RFrange, :, :);
 R3dec.meanSqAct = R3_full.meanSqAct(RFrange, :, :);
@@ -91,16 +86,22 @@ end
 
 SNR3 = compute_snr_per_color_sites(R3dec, Tall_V4, siteRows, 'Verbose', false);
 
-if exist(colorTunePath, 'file') == 2
+if exist(colorTunePath, 'file') == 2 && ~hasSessionExclusions
     Sct = load(colorTunePath);
     assert(isfield(Sct, 'ColorTune') && isstruct(Sct.ColorTune), ...
         '%s must contain ColorTune.', colorTuneFile);
     ColorTune = Sct.ColorTune;
 else
-    assert(AutoBuildColorTune, ...
+    assert(AutoBuildColorTune || hasSessionExclusions, ...
         'Missing %s. Run ColorTuning_Capsules_V4.m first or set AutoBuildColorTune = true.', colorTunePath);
 
-    fprintf('Color tuning file missing. Computing V4 ColorTune and saving to:\n%s\n', colorTunePath);
+    if hasSessionExclusions
+        fprintf(['Session exclusions are active for monkey %s; recomputing V4 ColorTune ' ...
+                 'from exclusion-aware 3-bin responses.\n'], char(monkeySuffix));
+    else
+        fprintf('Color tuning file missing. Computing V4 ColorTune and saving to:\n%s\n', colorTunePath);
+    end
+
     SNRmat3 = [SNR3.yellowEarly(siteRows), SNR3.yellowLate(siteRows), ...
                SNR3.purpleEarly(siteRows), SNR3.purpleLate(siteRows)];
     [bestSNR3, ~] = max(SNRmat3, [], 2, 'omitnan');
@@ -115,19 +116,31 @@ else
     ColorTune.RFrange = RFrange;
     ColorTune.monkeySuffix = monkeySuffix;
 
-    save(colorTunePath, 'ColorTune', '-v7.3');
-    fprintf('Saved V4 color tuning results to %s\n', colorTunePath);
+    if ~hasSessionExclusions
+        save(colorTunePath, 'ColorTune', '-v7.3');
+        fprintf('Saved V4 color tuning results to %s\n', colorTunePath);
+    end
 end
 
-nStim = numel(Rdec.nTrials);
-assert(nStim == 384, 'Expected 384 stimuli.');
-nTrials = double(Rdec.nTrials(:));
-
 [nCh, nStim2, nBins] = size(Rdec.meanAct);
+nStim = nStim2;
+assert(nStim == 384, 'Expected 384 stimuli.');
 assert(nCh == nV4, 'Localized response struct should have %d V4 rows, got %d.', nV4, nCh);
 assert(nStim2 == nStim, 'R.meanAct stimulus dim mismatch.');
 assert(all(size(Rdec.meanSqAct) == size(Rdec.meanAct)), 'R.meanSqAct must match R.meanAct size.');
 assert(size(Rdec.timeWindows,1) == nBins, 'R.timeWindows rows must equal #bins.');
+
+nTrialsRaw = Rdec.nTrials;
+if isvector(nTrialsRaw)
+    nTrialsByStim = double(nTrialsRaw(:));
+    perSiteTrials = false;
+    assert(numel(nTrialsByStim) == nStim, 'Rdec.nTrials vector must have %d elements.', nStim);
+elseif ismatrix(nTrialsRaw) && size(nTrialsRaw,2) == nStim
+    perSiteTrials = true;
+    nTrialsByStim = [];
+else
+    error('Rdec.nTrials must be a vector(%d) or matrix(nSites x %d).', nStim, nStim);
+end
 
 tCenters = mean(Rdec.timeWindows, 2);
 
@@ -209,11 +222,15 @@ if normalizeBySpontSD
         assert(any(isSpontBin), 'No spontaneous bins found (timeWindows end<=0).');
 
         bIdx = find(isSpontBin);
-        wStim = nTrials;
-        wStim = wStim / sum(wStim);
-
         fprintf('Computing sdSpont from %d pre-0 bins using high-resolution V4 responses...\n', numel(bIdx));
         for site = 1:nV4
+            if perSiteTrials
+                nTrSite = double(Rdec.nTrials(site,:)).';
+            else
+                nTrSite = nTrialsByStim;
+            end
+            wStim = nTrSite;
+            wStim = wStim / sum(wStim);
             varBins = nan(numel(bIdx),1);
             for ib = 1:numel(bIdx)
                 tb = bIdx(ib);
@@ -221,7 +238,7 @@ if normalizeBySpontSD
                 m = squeeze(Rdec.meanAct(site,:,tb)).';
                 m2 = squeeze(Rdec.meanSqAct(site,:,tb)).';
 
-                good = isfinite(m) & isfinite(m2) & (nTrials > 0);
+                good = isfinite(m) & isfinite(m2) & (nTrSite > 0);
                 if ~any(good)
                     continue;
                 end
@@ -315,12 +332,17 @@ assert(any(preMask), 'No pre-stimulus bins available for baseline subtraction.')
 objectTraceSite = nan(numel(useSites), nBins);
 for ii = 1:numel(useSites)
     site = useSites(ii);
-    idxObj = isObject(site, :) & isfinite(nTrials.');
+    if perSiteTrials
+        nTrSite = double(Rdec.nTrials(site,:)).';
+    else
+        nTrSite = nTrialsByStim;
+    end
+    idxObj = isObject(site, :) & isfinite(nTrSite.');
     if ~any(idxObj)
         continue;
     end
 
-    nObjTrials = nTrials(idxObj);
+    nObjTrials = nTrSite(idxObj);
     nObjTotal = sum(nObjTrials);
     if ~(isfinite(nObjTotal) && nObjTotal > 0)
         continue;

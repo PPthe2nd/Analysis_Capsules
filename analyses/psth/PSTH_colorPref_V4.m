@@ -55,11 +55,9 @@ Tall_V4 = Sgeo.Tall_V4;
 RFrange = Sgeo.RFrange(:);
 nV4 = numel(RFrange);
 v4Sites = (1:nV4).';
+hasSessionExclusions = ~isempty(site_session_exclusions(monkeySuffix));
 
-Sresp = load(respPath);
-assert(isfield(Sresp, 'R') && isstruct(Sresp.R), ...
-    '%s must contain struct R.', respFile);
-R_full = Sresp.R;
+R_full = load_capsules_struct_exclusion_aware(respPath, monkeySuffix, 'cfg', cfg);
 R = R_full;
 R.meanAct = R_full.meanAct(RFrange, :, :);
 R.meanSqAct = R_full.meanSqAct(RFrange, :, :);
@@ -69,23 +67,24 @@ else
     R.nTrials = R_full.nTrials;
 end
 
-if exist(colorTunePath, 'file') == 2
+if exist(colorTunePath, 'file') == 2 && ~hasSessionExclusions
     Sct = load(colorTunePath);
     assert(isfield(Sct, 'ColorTune') && isstruct(Sct.ColorTune), ...
         '%s must contain ColorTune.', colorTuneFile);
     ColorTune = Sct.ColorTune;
 else
-    assert(AutoBuildColorTune, ...
+    assert(AutoBuildColorTune || hasSessionExclusions, ...
         'Missing %s. Run ColorTuning_Capsules_V4.m first or set AutoBuildColorTune = true.', colorTunePath);
     assert(exist(resp3binPath, 'file') == 2, ...
         'Missing %s. Need the 3-bin response summary to build ColorTune.', resp3binPath);
 
-    fprintf('Color tuning file missing. Computing V4 ColorTune and saving to:\n%s\n', colorTunePath);
-    Sresp3 = load(resp3binPath);
-    assert(isfield(Sresp3, 'R') && isstruct(Sresp3.R), ...
-        '%s must contain struct R.', resp3binFile);
-
-    R3_full = Sresp3.R;
+    if hasSessionExclusions
+        fprintf(['Session exclusions are active for monkey %s; recomputing V4 ColorTune ' ...
+                 'from exclusion-aware 3-bin responses.\n'], char(monkeySuffix));
+    else
+        fprintf('Color tuning file missing. Computing V4 ColorTune and saving to:\n%s\n', colorTunePath);
+    end
+    R3_full = load_capsules_struct_exclusion_aware(resp3binPath, monkeySuffix, 'cfg', cfg);
     R3 = R3_full;
     R3.meanAct = R3_full.meanAct(RFrange, :, :);
     R3.meanSqAct = R3_full.meanSqAct(RFrange, :, :);
@@ -110,18 +109,30 @@ else
     ColorTune.RFrange = RFrange;
     ColorTune.monkeySuffix = monkeySuffix;
 
-    save(colorTunePath, 'ColorTune', '-v7.3');
-    fprintf('Saved V4 color tuning results to %s\n', colorTunePath);
+    if ~hasSessionExclusions
+        save(colorTunePath, 'ColorTune', '-v7.3');
+        fprintf('Saved V4 color tuning results to %s\n', colorTunePath);
+    end
 end
 
-nStim = numel(R.nTrials);
-nTrials = double(R.nTrials(:));
-assert(nStim == 384, 'Expected 384 stimuli.');
-
 [nCh, nStim2, nBins] = size(R.meanAct);
+nStim = nStim2;
+assert(nStim == 384, 'Expected 384 stimuli.');
 assert(nCh == nV4, 'Localized response struct should have %d V4 rows, got %d.', nV4, nCh);
 assert(nStim2 == nStim, 'R.meanAct stimulus dim mismatch.');
 assert(size(R.timeWindows,1) == nBins, 'R.timeWindows rows must equal #bins.');
+
+nTrialsRaw = R.nTrials;
+if isvector(nTrialsRaw)
+    nTrialsByStim = double(nTrialsRaw(:));
+    perSiteTrials = false;
+    assert(numel(nTrialsByStim) == nStim, 'R.nTrials vector must have %d elements.', nStim);
+elseif ismatrix(nTrialsRaw) && size(nTrialsRaw,2) == nStim
+    perSiteTrials = true;
+    nTrialsByStim = [];
+else
+    error('R.nTrials must be a vector(%d) or matrix(nSites x %d).', nStim, nStim);
+end
 
 tCenters = mean(R.timeWindows, 2);
 
@@ -207,13 +218,18 @@ for ii = 1:numel(keepSites)
     sumP = zeros(nBins,1); NP = 0;
     sumG = zeros(nBins,1); NG = 0;
     doGray = keepGraySite(site);
+    if perSiteTrials
+        nTrSite = double(R.nTrials(ch, :)).';
+    else
+        nTrSite = nTrialsByStim;
+    end
 
     for ip = 1:nPairs
         a = pairsA(ip);
         b = pairsB(ip);
 
-        na = nTrials(a);
-        nb = nTrials(b);
+        na = nTrSite(a);
+        nb = nTrSite(b);
 
         ma = squeeze(R.meanAct(ch, a, :));
         mb = squeeze(R.meanAct(ch, b, :));
